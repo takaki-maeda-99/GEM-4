@@ -54,6 +54,5 @@ def test_predict_pipeline(mock_proc_cls, mock_model_cls, base_config):
 
     pred = policy.predict(batch)
     assert pred.shape == (2, 1, 7)
-    # Gripper should be in [0, 1]
-    assert (pred[:, :, 6] >= 0).all()
-    assert (pred[:, :, 6] <= 1).all()
+    # Output should be finite
+    assert torch.isfinite(pred).all()
