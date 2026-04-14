@@ -126,9 +126,10 @@ def main():
             break
 
         try:
-            features = policy.encode(batch)
+            features = policy.encode(batch).float()
+            dev = next(policy.action_head.parameters()).device
             loss_dict = policy.action_head.compute_loss(
-                features, batch["actions"].to(features.device)
+                features.to(dev), batch["actions"].to(dev).float()
             )
 
             loss_dict["loss"].backward()
