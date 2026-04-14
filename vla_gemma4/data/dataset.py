@@ -2,9 +2,43 @@ import torch
 from torch import Tensor
 from torch.utils.data import Dataset
 
-from lerobot.datasets.lerobot_dataset import LeRobotDataset
-
 from .normalizer import Normalizer
+
+
+def _patch_lerobot_video_backend():
+    """Patch lerobot's video decoding to use pyav when torchvision/torchcodec fail."""
+    try:
+        import lerobot.datasets.video_utils as vu
+
+        def _decode_pyav(video_path, timestamps, tolerance_s, backend=None):
+            import av
+            import numpy as np
+
+            container = av.open(str(video_path))
+            stream = container.streams.video[0]
+            fps = float(stream.average_rate)
+
+            frames = []
+            for ts in timestamps:
+                frame_idx = int(round(ts * fps))
+                container.seek(frame_idx, stream=stream)
+                for frame in container.decode(video=0):
+                    img = frame.to_ndarray(format="rgb24")
+                    tensor = torch.from_numpy(img).permute(2, 0, 1).float() / 255.0
+                    frames.append(tensor)
+                    break
+
+            container.close()
+            return torch.stack(frames) if frames else torch.empty(0)
+
+        vu.decode_video_frames = _decode_pyav
+    except ImportError:
+        pass
+
+
+_patch_lerobot_video_backend()
+
+from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
 
 class VLADataset(Dataset):

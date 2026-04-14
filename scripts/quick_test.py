@@ -34,6 +34,7 @@ def main():
         default_instruction=config["data"]["default_instruction"],
         chunk_size=config["chunk_size"],
         video_backend="pyav",
+        tolerance_s=1e6,  # Relaxed for older dataset formats
     )
     logger.info(f"Dataset size: {len(dataset)}")
 
