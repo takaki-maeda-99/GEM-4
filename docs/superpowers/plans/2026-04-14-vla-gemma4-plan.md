@@ -1147,11 +1147,12 @@ def vla_collate_fn(samples: list[dict], num_cameras: int) -> dict:
     }
 ```
 
-- [ ] **Step 4: Write transforms placeholder**
+- [ ] **Step 4: Write transforms module**
+
+Note: Image preprocessing (resize, normalize) is handled by Gemma 4's `AutoProcessor`. These transforms provide *additional* training-time augmentation. Passed to `VLADataset` via config when needed.
 
 `vla_gemma4/data/transforms.py`:
 ```python
-import torch
 from torchvision import transforms as T
 
 
@@ -1656,6 +1657,11 @@ class VLATrainer:
                 },
                 path,
             )
+            # If using LoRA, also save adapter in PEFT format for easy loading
+            if hasattr(unwrapped, "gemma") and hasattr(unwrapped.gemma, "save_pretrained"):
+                adapter_path = path.replace(".pt", "_adapter")
+                unwrapped.gemma.save_pretrained(adapter_path)
+                logger.info(f"LoRA adapter saved to {adapter_path}")
             logger.info(f"Checkpoint saved to {path}")
 ```
 
@@ -1889,6 +1895,7 @@ def main():
     dataset = VLADataset(
         dataset_name=config["data"]["dataset_name"],
         cameras=config["cameras"],
+        proprio_key=config.get("proprio_key", "observation.state"),
         language_instruction_key=config["data"]["language_instruction_key"],
         default_instruction=config["data"]["default_instruction"],
         chunk_size=config["chunk_size"],
