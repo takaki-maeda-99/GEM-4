@@ -152,10 +152,14 @@ def main():
 
     # Train
     num_training_steps = len(dataloader) * config["training"]["num_epochs"]
-    trainer = VLATrainer(policy, config, num_training_steps=num_training_steps)
+    trainer = VLATrainer(
+        policy, config,
+        num_training_steps=num_training_steps,
+        output_dir=args.output_dir,
+    )
     trainer.train(dataloader)
 
-    logger.info(f"Training complete. Checkpoints saved to current directory.")
+    logger.info(f"Training complete. Checkpoints saved to {args.output_dir}")
 
 
 if __name__ == "__main__":
