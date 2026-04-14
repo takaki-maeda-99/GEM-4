@@ -24,3 +24,6 @@ dev = [
 
 [tool.setuptools.packages.find]
 include = ["vla_gemma4*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["tests"]
