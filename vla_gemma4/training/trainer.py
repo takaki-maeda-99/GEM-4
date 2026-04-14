@@ -1,4 +1,5 @@
 import logging
+import os
 
 import torch
 from torch import nn
@@ -12,8 +13,17 @@ logger = logging.getLogger(__name__)
 class VLATrainer:
     """Training loop for VLAPolicy with Accelerate for multi-GPU and mixed precision."""
 
-    def __init__(self, policy: nn.Module, config: dict, num_training_steps: int = 10000):
+    def __init__(
+        self,
+        policy: nn.Module,
+        config: dict,
+        num_training_steps: int = 10000,
+        output_dir: str = "outputs",
+    ):
         self.config = config
+        self.output_dir = output_dir
+        os.makedirs(output_dir, exist_ok=True)
+
         train_cfg = config["training"]
 
         # Accelerator handles device placement, mixed precision, and multi-GPU
@@ -91,13 +101,17 @@ class VLATrainer:
             step_metrics = self.train_step(batch)
             metrics.append(step_metrics)
 
+            if self.global_step % 50 == 0:
+                logger.info(
+                    f"  step {self.global_step}: loss={step_metrics['loss']:.4f}"
+                )
+
             if self.global_step % self.save_every_n_steps == 0:
                 self._save_checkpoint()
 
         return metrics
 
     def train(self, train_dataloader, eval_dataloader=None) -> None:
-        # Prepare dataloader with Accelerator
         train_dataloader = self.accelerator.prepare(train_dataloader)
 
         for epoch in range(self.num_epochs):
@@ -109,9 +123,8 @@ class VLATrainer:
 
         self._save_checkpoint()
 
-    def _save_checkpoint(self, path: str | None = None) -> None:
-        if path is None:
-            path = f"checkpoint_step_{self.global_step}.pt"
+    def _save_checkpoint(self) -> None:
+        path = os.path.join(self.output_dir, f"checkpoint_step_{self.global_step}.pt")
         self.accelerator.wait_for_everyone()
         if self.accelerator.is_main_process:
             unwrapped = self.accelerator.unwrap_model(self.policy)
@@ -123,9 +136,4 @@ class VLATrainer:
                 },
                 path,
             )
-            # If using LoRA, also save adapter in PEFT format for easy loading
-            if hasattr(unwrapped, "gemma") and hasattr(unwrapped.gemma, "save_pretrained"):
-                adapter_path = path.replace(".pt", "_adapter")
-                unwrapped.gemma.save_pretrained(adapter_path)
-                logger.info(f"LoRA adapter saved to {adapter_path}")
             logger.info(f"Checkpoint saved to {path}")
