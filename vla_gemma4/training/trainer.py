@@ -52,9 +52,24 @@ class VLATrainer:
         self.eval_every_n_steps = train_cfg["eval_every_n_steps"]
         self.global_step = 0
 
+    def _batch_to_device(self, batch: dict) -> dict:
+        """Move batch tensors to the accelerator device."""
+        device = self.accelerator.device
+        result = {}
+        for k, v in batch.items():
+            if isinstance(v, torch.Tensor):
+                result[k] = v.to(device)
+            elif isinstance(v, list) and v and isinstance(v[0], torch.Tensor):
+                result[k] = [t.to(device) for t in v]
+            else:
+                result[k] = v
+        return result
+
     def train_step(self, batch: dict) -> dict:
         self.policy.train()
         self.optimizer.zero_grad()
+
+        batch = self._batch_to_device(batch)
 
         with self.accelerator.autocast():
             loss_dict = self.policy.compute_loss(batch)
