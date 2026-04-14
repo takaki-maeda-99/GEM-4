@@ -134,9 +134,21 @@ vla_gemma4/
 
 ## Roadmap
 
+### Action Heads
 - [ ] ACTHead (CVAE + chunking)
 - [ ] FlowMatchingHead
 - [ ] UniActHead (VQ codebook)
+
+### Training & Evaluation
 - [ ] Simulation evaluation (SIMPLER / ManiSkill)
 - [ ] Multi-dataset training
 - [ ] Observation history (temporal context)
+
+### Jetson 移植
+- [ ] JetPack 対応 PyTorch wheel でのセットアップ
+- [ ] bitsandbytes ARM 対応確認（非対応なら FP16 フルロードまたは `torch.quantization` に切り替え）
+- [ ] BF16 → FP16 切り替え（Jetson Orin は BF16 非対応の場合あり）
+- [ ] リアルタイム推論ループ (`scripts/deploy.py` — カメラ取得→推論→アクション送信)
+- [ ] TensorRT 変換による推論高速化
+- [ ] ビデオデコードの NVDEC / GStreamer 対応（PyAV は CPU デコードで遅い）
+- [ ] VRAM 見積り（Orin NX 16GB: 4bit 必須 / Orin AGX 64GB: FP16 可）
