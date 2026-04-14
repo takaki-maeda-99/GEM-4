@@ -32,7 +32,7 @@ Gemma 4 E2B をバックボーンとした Vision-Language-Action (VLA) モデ�
 - **コンテキスト長**: 128K トークン
 - **ビジョンエンコーダ**: ~150M params、可変アスペクト比・解像度対応
 - **ビジュアルトークンバジェット**: 70 / 140 / 280 / 560 / 1120 から選択可能
-- **HuggingFace**: `AutoModelForMultimodalLM.from_pretrained("google/gemma-4-E2B-it")`
+- **HuggingFace**: `AutoModelForImageTextToText.from_pretrained("google/gemma-4-E2B-it")`
 - バックボーンサイズは `model_name` の変更のみで切り替え可能（例: `google/gemma-4-4B-it`）
 
 ### アクション空間
