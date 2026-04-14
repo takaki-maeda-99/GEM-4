@@ -12,9 +12,8 @@ import yaml
 from vla_gemma4.data.collate import vla_collate_fn
 from vla_gemma4.data.dataset import VLADataset
 from vla_gemma4.data.normalizer import Normalizer
-from vla_gemma4.model.vla_policy import VLAPolicy
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
 
@@ -23,7 +22,7 @@ def load_config(config_path: str) -> dict:
         return yaml.safe_load(f)
 
 
-def evaluate(policy, dataloader, normalizer=None) -> dict:
+def evaluate(policy, dataloader, action_dim: int, normalizer=None) -> dict:
     """Run offline evaluation on a dataset.
 
     Returns:
@@ -35,26 +34,27 @@ def evaluate(policy, dataloader, normalizer=None) -> dict:
     all_l1 = []
     gripper_correct = 0
     gripper_total = 0
+    pose_dim = action_dim - 1  # Last dim is gripper
 
     with torch.no_grad():
         for batch in dataloader:
-            pred = policy.predict(batch)  # [B, T, 7]
-            actions = batch["actions"]
+            pred = policy.predict(batch)  # [B, T, action_dim]
+            actions = batch["actions"].to(pred.device)
 
             # Denormalize if needed
             if normalizer is not None:
                 pred = normalizer.denormalize(pred)
                 actions = normalizer.denormalize(actions)
 
-            # Position/rotation metrics (dims 0-5)
-            pose_pred = pred[:, :, :6]
-            pose_target = actions[:, :, :6]
+            # Position/rotation metrics (all dims except gripper)
+            pose_pred = pred[:, :, :pose_dim]
+            pose_target = actions[:, :, :pose_dim]
             all_mse.append(((pose_pred - pose_target) ** 2).mean().item())
             all_l1.append((pose_pred - pose_target).abs().mean().item())
 
-            # Gripper metrics (dim 6)
-            gripper_pred = (pred[:, :, 6] > 0.5).float()
-            gripper_target = (actions[:, :, 6] > 0.5).float()
+            # Gripper metrics (last dim)
+            gripper_pred = (pred[:, :, -1] > 0.5).float()
+            gripper_target = (actions[:, :, -1] > 0.5).float()
             gripper_correct += (gripper_pred == gripper_target).sum().item()
             gripper_total += gripper_target.numel()
 
@@ -62,6 +62,7 @@ def evaluate(policy, dataloader, normalizer=None) -> dict:
         "mse": sum(all_mse) / len(all_mse),
         "l1": sum(all_l1) / len(all_l1),
         "gripper_accuracy": gripper_correct / gripper_total if gripper_total > 0 else 0.0,
+        "num_batches": len(all_mse),
     }
 
     return metrics
@@ -88,33 +89,45 @@ def main():
         default_instruction=config["data"]["default_instruction"],
         chunk_size=config["chunk_size"],
         normalizer=normalizer,
+        video_backend="pyav",
     )
+    logger.info(f"Eval dataset size: {len(dataset)}")
 
     num_cameras = len(config["cameras"])
     dataloader = DataLoader(
         dataset,
         batch_size=config["training"]["batch_size"],
         shuffle=False,
+        num_workers=2,
         collate_fn=lambda batch: vla_collate_fn(batch, num_cameras=num_cameras),
     )
 
-    # Load model (handles both full and LoRA checkpoints)
-    policy = VLAPolicy(config)
+    # Build model with quantization support
+    from vla_gemma4.scripts.train import build_policy, apply_lora
+
+    logger.info("Loading model...")
+    policy = build_policy(config)
+
+    # Load checkpoint
     if config["training"]["strategy"] == "lora":
-        from peft import PeftModel
-        policy.gemma = PeftModel.from_pretrained(
-            policy.gemma, args.checkpoint
-        )
+        policy = apply_lora(policy, config)
+        # Load LoRA adapter weights from checkpoint
+        checkpoint = torch.load(args.checkpoint, map_location="cpu")
+        # Filter to only load matching keys (LoRA + custom modules)
+        model_state = checkpoint["model_state_dict"]
+        missing, unexpected = policy.load_state_dict(model_state, strict=False)
+        logger.info(f"Loaded checkpoint (missing={len(missing)}, unexpected={len(unexpected)} keys)")
     else:
         checkpoint = torch.load(args.checkpoint, map_location="cpu")
         policy.load_state_dict(checkpoint["model_state_dict"])
+        logger.info("Loaded full checkpoint")
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    policy = policy.to(device)
+    metrics = evaluate(policy, dataloader, action_dim=config["action_dim"], normalizer=normalizer)
 
-    metrics = evaluate(policy, dataloader, normalizer)
+    logger.info(f"Evaluation results:")
+    for k, v in metrics.items():
+        logger.info(f"  {k}: {v:.6f}" if isinstance(v, float) else f"  {k}: {v}")
 
-    logger.info(f"Evaluation results: {metrics}")
     with open(args.output, "w") as f:
         json.dump(metrics, f, indent=2)
     logger.info(f"Results saved to {args.output}")
