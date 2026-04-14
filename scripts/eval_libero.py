@@ -60,7 +60,12 @@ def evaluate_libero(
     for task_idx in range(num_tasks):
         task = benchmark.get_task(task_idx)
         bddl_path = benchmark.get_task_bddl_file_path(task_idx)
-        init_states = benchmark.get_task_init_states(task_idx)
+        # Load init states manually (torch.load needs weights_only=False for pickle data)
+        init_states_path = os.path.join(
+            bddl_path.replace("bddl_files", "init_states").rsplit("/", 1)[0],
+            task.init_states_file,
+        )
+        init_states = torch.load(init_states_path, map_location="cpu", weights_only=False)
 
         logger.info(f"Task {task_idx}/{num_tasks}: {task.name}")
 
