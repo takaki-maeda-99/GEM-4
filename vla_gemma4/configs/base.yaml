@@ -1,0 +1,50 @@
+# Model
+model_name: "google/gemma-4-E2B-it"
+num_action_tokens: 1
+visual_token_budget: 280
+
+# Action space
+action_dim: 7
+chunk_size: 1
+
+# Cameras
+cameras:
+  - "observation.images.top"
+  - "observation.images.wrist"
+
+# Proprioception
+proprio_dim: 7
+proprio_key: "observation.state"
+
+# Action head
+action_head:
+  type: "mlp"
+  hidden_dims: [512, 256]
+
+# Training
+training:
+  strategy: "full"
+  lora:
+    r: 16
+    alpha: 32
+    target_modules: ["q_proj", "v_proj"]
+  batch_size: 8
+  lr: 1.0e-4
+  weight_decay: 0.01
+  num_epochs: 100
+  warmup_steps: 1000
+  max_grad_norm: 1.0
+  mixed_precision: "bf16"
+  save_every_n_steps: 5000
+  eval_every_n_steps: 1000
+
+# Data
+data:
+  dataset_name: "lerobot/bridge_v2"
+  language_instruction_key: "language_instruction"
+  default_instruction: "manipulation task"
+  normalizer_path: null
+
+# Inference
+inference:
+  quantization: null
