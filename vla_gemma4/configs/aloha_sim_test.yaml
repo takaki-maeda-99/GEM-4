@@ -22,6 +22,7 @@ proprio_key: "observation.state"
 action_head:
   type: "mlp"
   hidden_dims: [512, 256]
+  gripper_as_binary: false  # ALOHAはグリッパーも連続値
 
 # Training
 training:
@@ -30,7 +31,7 @@ training:
     r: 8
     alpha: 16
     target_modules: ["q_proj", "v_proj"]
-  batch_size: 8
+  batch_size: 32
   lr: 1.0e-4
   weight_decay: 0.01
   num_epochs: 1

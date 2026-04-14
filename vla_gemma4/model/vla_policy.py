@@ -18,6 +18,7 @@ def _build_action_head(config: dict, input_dim: int) -> ActionHead:
             action_dim=config["action_dim"],
             chunk_size=config["chunk_size"],
             hidden_dims=head_config.get("hidden_dims"),
+            gripper_as_binary=head_config.get("gripper_as_binary", False),
         )
     else:
         raise ValueError(f"Unknown action head type: {head_type}")
