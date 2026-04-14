@@ -118,7 +118,7 @@ def evaluate_libero(
 def main():
     parser = argparse.ArgumentParser(description="LIBERO benchmark evaluation")
     parser.add_argument("--config", type=str, required=True)
-    parser.add_argument("--checkpoint", type=str, required=True)
+    parser.add_argument("--checkpoint", type=str, default=None, help="Checkpoint path (omit for random weights)")
     parser.add_argument("--suite", type=str, default="libero_spatial")
     parser.add_argument("--n_episodes", type=int, default=10)
     parser.add_argument("--max_steps", type=int, default=300)
@@ -139,15 +139,18 @@ def main():
     if config["training"]["strategy"] == "lora":
         policy = apply_lora(policy, config)
 
-    checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
-    saved_state = checkpoint["model_state_dict"]
-    current_state = policy.state_dict()
-    filtered_state = {k: v for k, v in saved_state.items() if k in current_state}
-    policy.load_state_dict(filtered_state, strict=False)
-    logger.info(f"Loaded {len(filtered_state)} / {len(saved_state)} keys from checkpoint")
-
-    del checkpoint, saved_state
-    torch.cuda.empty_cache()
+    if args.checkpoint:
+        checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
+        saved_state = checkpoint["model_state_dict"]
+        current_state = policy.state_dict()
+        filtered_state = {k: v for k, v in saved_state.items()
+                          if k in current_state and saved_state[k].shape == current_state[k].shape}
+        policy.load_state_dict(filtered_state, strict=False)
+        logger.info(f"Loaded {len(filtered_state)} / {len(saved_state)} keys from checkpoint")
+        del checkpoint, saved_state
+        torch.cuda.empty_cache()
+    else:
+        logger.info("No checkpoint specified, using random weights")
 
     results = evaluate_libero(
         policy=policy,
