@@ -39,11 +39,23 @@ Gemma 4 E2B をバックボーンとした Vision-Language-Action (VLA) モデ�
 
 - **形式**: EEF デルタポーズ（相対座標）
 - **次元**: 7 (Δx, Δy, Δz, Δroll, Δpitch, Δyaw, gripper)
+  - 位置・回転（dim 0-5）: 連続値、MSE 損失
+  - グリッパー（dim 6）: [0, 1] の連続値（0=閉、1=開）、BCE 損失で個別に扱う
 - **出力形状**: `[B, T, 7]` — T=1 で1ステップ予測、T>1 でチャンキング予測
 
 ### 特徴抽出
 
-学習可能な `[ACT]` トークン（特殊トークン埋め込み）をトークン列の末尾に追加し、LLM 最終層のその位置の隠れ状態をアクションヘッドへの入力とする。これにより固定長の特徴ベクトル `[B, D]` が得られる。
+学習可能な `[ACT]` トークン（特殊トークン埋め込み）をトークン列の末尾に追加し、LLM 最終層のその位置の隠れ状態をアクションヘッドへの入力とする。
+
+- **トークン数**: `num_action_tokens` で設定可能（デフォルト 1）
+  - MLPHead: 1 トークンで十分（出力を reshape して `[B, T, 7]` を生成）
+  - ACTHead: チャンクサイズ分のクエリトークンが必要になる可能性があるため、ヘッドに応じて変更可能にする
+- **特徴形状**: `[B, N_act, D]`（N_act = num_action_tokens）
+  - N_act=1 のとき実質 `[B, 1, D]`、ヘッド側で squeeze 可能
+
+### 時間的コンテキスト
+
+初期実装では**単一タイムステップの観測**のみを入力とする（観測履歴なし）。これは設計のシンプルさを優先した意図的な選択。将来的に過去フレームの履歴を入力に追加する拡張は、トークン列に過去の画像トークンを追加する形で対応可能。
 
 ## モジュール構成
 
@@ -60,13 +72,13 @@ vla_gemma4/
 │       └── uniact_head.py      # UniActHead（VQ コードブック、後日実装）
 ├── data/
 │   ├── dataset.py              # LeRobot データセットのラッパー
+│   ├── normalizer.py           # Normalizer: アクション正規化・逆正規化
 │   └── transforms.py           # 画像前処理・データ拡張
 ├── training/
-│   ├── trainer.py              # 学習ループ
-│   └── configs/                # 設定ファイル
+│   └── trainer.py              # 学習ループ
 ├── scripts/
 │   ├── train.py                # 学習スクリプト
-│   └── eval.py                 # 評価スクリプト
+│   └── eval.py                 # 評価スクリプト（オフライン評価 + 推論ループ）
 └── configs/
     ├── base.yaml               # 共通設定
     ├── mlp_head.yaml           # MLP ヘッド用
@@ -91,14 +103,14 @@ vla_gemma4/
 ### ActionHead インターフェース
 
 ```python
-class ActionHead(ABC):
-    """すべてのアクションヘッドの共通インターフェース"""
+class ActionHead(nn.Module, ABC):
+    """すべてのアクションヘッドの共通インターフェース（nn.Module を継承し、パラメータ管理・デバイス移動に対応）"""
 
     @abstractmethod
     def compute_loss(self, features: Tensor, actions: Tensor, **kwargs) -> dict:
         """
         学習時: 損失とメトリクスを返す。
-        features: [B, D] LLM バックボーンからの特徴ベクトル
+        features: [B, N_act, D] LLM バックボーンからの特徴ベクトル
         actions:  [B, T, action_dim] 正解アクション
         returns:  {"loss": Tensor, ...追加メトリクス}
         """
@@ -120,7 +132,7 @@ class ActionHead(ABC):
 
 | ヘッド | 方式 | 損失関数 | 初期実装 |
 |--------|------|----------|----------|
-| MLPHead | 決定的回帰 | MSE | Yes |
+| MLPHead | 決定的回帰 | MSE（位置・回転）+ BCE（グリッパー） | Yes |
 | ACTHead | CVAE + チャンキング | 再構成誤差 + KL | No（後日） |
 | FlowMatchingHead | 条件付きフローマッチング | CFM 損失 | No（後日） |
 | UniActHead | VQ コードブック + ロボット固有デコーダ | VQ 損失 + 復元損失 | No（後日） |
@@ -151,10 +163,20 @@ class VLADataset:
 - チャンク長 T（1ステップ or チャンキング）
 - 画像前処理パラメータ
 
+### 言語指示の取得
+
+- LeRobot データセットの `language_instruction` フィールドから取得
+- フィールドが存在しない場合は設定ファイルでデフォルトの指示テキストを指定可能（例: `"manipulation task"`）
+- 将来的に指示文のパラフレーズ拡張も検討可能
+
 ### データ前処理
 
-- 画像: リサイズ、正規化（`transforms.py` に分離）
-- アクション: mean/std 正規化（データセット単位で管理）
+- 画像: Gemma 4 の `AutoProcessor` による前処理を使用（リサイズ・正規化はプロセッサが担当）。ビジュアルトークンバジェットは設定で指定。
+- アクション正規化: `Normalizer` クラスで管理
+  - 学習データから mean/std を事前計算し、JSON ファイルとして保存
+  - `VLADataset` 内で正規化を適用（`__getitem__` 時）
+  - 推論時は同じ `Normalizer` で逆正規化してロボットへの生のデルタ指令に変換
+  - 正規化統計は学習データセットごとに管理（マルチデータセット学習時はデータセット単位で適用）
 
 ## 学習パイプライン
 
@@ -162,6 +184,7 @@ class VLADataset:
 
 ```python
 for batch in dataloader:
+    # encode() は微分可能 — 勾配はアクションヘッド → LLM バックボーン → ViT まで流れる（E2E）
     features = policy.encode(batch)
     loss_dict = policy.action_head.compute_loss(features, batch["actions"])
     loss_dict["loss"].backward()
@@ -172,10 +195,10 @@ for batch in dataloader:
 
 | 戦略 | 対象 | 用途 |
 |------|------|------|
-| フル FT | 全パラメータ | 精度重視 |
-| LoRA | LLM に LoRA 適用、ヘッド+ProprioEncoder はフル学習 | VRAM 節約 |
+| フル FT | 全パラメータ（ViT + LLM + ヘッド + ProprioEncoder） | 精度重視 |
+| LoRA | LLM に LoRA 適用、ViT はフリーズ、ヘッド + ProprioEncoder はフル学習 | VRAM 節約 |
 
-LoRA の適用には HuggingFace PEFT ライブラリを使用。
+LoRA の適用には HuggingFace PEFT ライブラリを使用。LoRA モード時は ViT をフリーズすることで VRAM を大幅に削減する。
 
 ### 学習設定
 
@@ -196,6 +219,20 @@ LoRA の適用には HuggingFace PEFT ライブラリを使用。
 | 4bit | bitsandbytes | エッジデバイス |
 
 HuggingFace Transformers の `BitsAndBytesConfig` で設定。アーキテクチャ変更は不要。
+
+## 評価
+
+### オフライン評価
+
+- テストセットに対するアクション予測精度（MSE、L1 誤差）
+- グリッパー予測精度（accuracy、F1）
+- `eval.py` で実行、結果を JSON/CSV で出力
+
+### オンライン評価（将来対応）
+
+- シミュレーション環境（SIMPLER、ManiSkill 等）でのタスク成功率
+- 実機でのタスク成功率
+- 初期実装スコープ外だが、推論ループ（観測取得 → モデル推論 → アクション送信）は `eval.py` に実装しておく
 
 ## 設定管理
 
