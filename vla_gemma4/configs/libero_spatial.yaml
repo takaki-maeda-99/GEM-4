@@ -7,23 +7,23 @@ visual_token_budget: 140
 
 action_dim: 7
 chunk_size: 1
-proprio_dim: 9
+proprio_dim: 8
 proprio_key: "observation.state"
 
-# Evaluation: LIBERO observation key names
+# Evaluation: LIBERO sim observation key names
 cameras:
   - "agentview_image"
   - "robot0_eye_in_hand_image"
 
-# Training: LeRobot dataset camera key names
+# Training: LeRobot dataset camera key names (used by VLADataset)
 lerobot_cameras:
-  - "observation.images.agentview"
-  - "observation.images.eye_in_hand"
+  - "observation.images.image"
+  - "observation.images.wrist_image"
 
 action_head:
   type: "mlp"
   hidden_dims: [512, 256]
-  gripper_as_binary: true
+  gripper_as_binary: false  # LIBERO gripper is {-1, 1}, not [0, 1]
 
 training:
   strategy: "lora"
@@ -34,7 +34,7 @@ training:
   batch_size: 16
   lr: 1.0e-4
   weight_decay: 0.01
-  num_epochs: 5
+  num_epochs: 1
   warmup_steps: 100
   max_grad_norm: 1.0
   mixed_precision: "bf16"
@@ -42,8 +42,8 @@ training:
   eval_every_n_steps: 250
 
 data:
-  dataset_name: "HuggingFaceVLA/libero_spatial"
-  language_instruction_key: "language_instruction"
+  dataset_name: "lerobot/libero_spatial_image"
+  language_instruction_key: "task"
   default_instruction: "manipulation task"
   normalizer_path: null
 
