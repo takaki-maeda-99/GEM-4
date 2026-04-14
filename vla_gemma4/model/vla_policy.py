@@ -37,7 +37,12 @@ class VLAPolicy(nn.Module):
         )
         self.processor = AutoProcessor.from_pretrained(config["model_name"])
 
-        hidden_dim = self.gemma.config.hidden_size
+        # Gemma 4 stores hidden_size in text_config; fall back for mocks
+        gemma_config = self.gemma.config
+        if hasattr(gemma_config, "text_config") and hasattr(gemma_config.text_config, "hidden_size") and isinstance(gemma_config.text_config.hidden_size, int):
+            hidden_dim = gemma_config.text_config.hidden_size
+        else:
+            hidden_dim = gemma_config.hidden_size
 
         # Proprio encoder
         self.proprio_encoder = ProprioEncoder(
