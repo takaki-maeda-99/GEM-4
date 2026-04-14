@@ -118,9 +118,12 @@ def main():
     if config["data"].get("normalizer_path"):
         normalizer = Normalizer.load(config["data"]["normalizer_path"])
 
+    # Use lerobot_cameras if available (LeRobot dataset keys differ from sim keys)
+    train_cameras = config.get("lerobot_cameras", config["cameras"])
+
     dataset = VLADataset(
         dataset_name=config["data"]["dataset_name"],
-        cameras=config["cameras"],
+        cameras=train_cameras,
         proprio_key=config.get("proprio_key", "observation.state"),
         language_instruction_key=config["data"]["language_instruction_key"],
         default_instruction=config["data"]["default_instruction"],
@@ -131,7 +134,7 @@ def main():
     )
     logger.info(f"Dataset size: {len(dataset)}")
 
-    num_cameras = len(config["cameras"])
+    num_cameras = len(train_cameras)
     dataloader = DataLoader(
         dataset,
         batch_size=config["training"]["batch_size"],

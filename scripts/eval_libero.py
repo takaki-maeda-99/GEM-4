@@ -25,10 +25,13 @@ def convert_obs_to_batch(obs: dict, instruction: str, camera_keys: list[str]) ->
         img = torch.from_numpy(obs[cam_key]).permute(2, 0, 1).float() / 255.0
         images.append(img.unsqueeze(0))
 
+    # LeRobot dataset has 8D state (gripper as 1D mean), sim has 9D (gripper as 2D)
+    # Match training format: mean of gripper qpos
+    gripper = np.mean(obs["robot0_gripper_qpos"], keepdims=True)
     proprio = np.concatenate([
-        obs["robot0_eef_pos"],
-        obs["robot0_eef_quat"],
-        obs["robot0_gripper_qpos"],
+        obs["robot0_eef_pos"],       # (3,)
+        obs["robot0_eef_quat"],      # (4,)
+        gripper,                     # (1,) — mean of 2 finger positions
     ])
 
     return {
@@ -39,7 +42,10 @@ def convert_obs_to_batch(obs: dict, instruction: str, camera_keys: list[str]) ->
 
 
 def record_video(frames: list[np.ndarray], path: str, fps: int = 20):
-    """Save frames as MP4 video using av (pyav)."""
+    """Save frames as MP4 video using av (pyav).
+
+    Each frame can be a single image or a side-by-side composite.
+    """
     import av
 
     h, w = frames[0].shape[:2]
@@ -58,6 +64,15 @@ def record_video(frames: list[np.ndarray], path: str, fps: int = 20):
         container.mux(packet)
     container.close()
     logger.info(f"Video saved to {path} ({len(frames)} frames)")
+
+
+def make_composite_frame(obs: dict) -> np.ndarray:
+    """Create side-by-side frame from agentview + wrist camera."""
+    agent = obs["agentview_image"]
+    wrist = obs["robot0_eye_in_hand_image"]
+    # Flip agentview vertically for natural viewing angle
+    agent = agent[::-1].copy()
+    return np.concatenate([agent, wrist], axis=1)
 
 
 def evaluate_libero(
@@ -112,9 +127,9 @@ def evaluate_libero(
             frames = []
 
             for step in range(max_steps):
-                # Record frame if requested
+                # Record composite frame (agentview + wrist side-by-side)
                 if record_dir:
-                    frames.append(obs["agentview_image"].copy())
+                    frames.append(make_composite_frame(obs))
 
                 batch = convert_obs_to_batch(obs, task.language, camera_keys)
                 with torch.no_grad():
@@ -124,7 +139,7 @@ def evaluate_libero(
 
                 if info.get("success", False):
                     if record_dir:
-                        frames.append(obs["agentview_image"].copy())
+                        frames.append(make_composite_frame(obs))
                     break
 
             success = int(info.get("success", False))
