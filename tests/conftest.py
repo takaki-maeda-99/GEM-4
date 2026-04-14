@@ -7,49 +7,81 @@ from torch import nn
 def make_mock_gemma(hidden_dim=1536):
     """Create a mock Gemma 4 model with the expected interface.
 
-    Shared across test_vla_policy.py and test_integration.py.
+    Mocks the PLE-aware encode() flow:
+    - model.model.language_model.embed_tokens (real nn.Embedding)
+    - model.model.language_model.hidden_size_per_layer_input = False (skip PLE in tests)
+    - model.model.language_model.forward(inputs_embeds=..., per_layer_inputs=..., attention_mask=...)
+    - model.model.get_placeholder_mask(input_ids, mm_token_type_ids) → (mask, None, None)
+    - model.model.get_image_features(pixel_values, image_position_ids) → BaseModelOutputWithPast
     """
     mock_model = MagicMock()
 
-    # model.model.embed_tokens: maps token IDs to embeddings
-    embed_tokens = nn.Embedding(100, hidden_dim)
-    mock_model.model.embed_tokens = embed_tokens
-
-    # model.config
+    # model.config — mock without text_config so VLAPolicy falls back to config.hidden_size
     config = MagicMock()
     config.hidden_size = hidden_dim
+    # Make text_config.hidden_size not be an int so the isinstance check fails
+    config.text_config.hidden_size = MagicMock()  # Not an int → falls back
     mock_model.config = config
 
     # model.dtype
     mock_model.dtype = torch.float32
 
-    # Vision tower: returns object with last_hidden_state
-    def mock_vision_tower(pixel_values=None, **kwargs):
-        B = pixel_values.shape[0]
-        output = MagicMock()
-        output.last_hidden_state = torch.randn(B, 64, 768)
-        return output
+    # --- Language model sub-module ---
+    embed_tokens = nn.Embedding(100, hidden_dim)
+    mock_model.model.language_model.embed_tokens = embed_tokens
 
-    mock_model.model.vision_tower.side_effect = mock_vision_tower
+    # Disable PLE in tests (simplifies mocking significantly)
+    mock_model.model.language_model.hidden_size_per_layer_input = False
 
-    # embed_vision: projects vision features to LLM space
-    def mock_embed_vision(inputs_embeds=None, **kwargs):
-        B, S, _ = inputs_embeds.shape
-        return torch.randn(B, S, hidden_dim)
-
-    mock_model.model.embed_vision.side_effect = mock_embed_vision
-
-    # model() forward returns an object with last_hidden_state
-    def mock_forward(**kwargs):
-        inputs_embeds = kwargs.get("inputs_embeds")
+    # language_model.forward: takes inputs_embeds, returns object with last_hidden_state
+    def mock_lang_forward(inputs_embeds=None, per_layer_inputs=None, attention_mask=None, **kwargs):
         B, S, D = inputs_embeds.shape
         output = MagicMock()
         output.last_hidden_state = torch.randn(B, S, D)
         return output
 
-    mock_model.model.side_effect = mock_forward
+    mock_model.model.language_model.side_effect = mock_lang_forward
+    mock_model.model.language_model.parameters = lambda: iter([embed_tokens.weight])
+
+    # --- get_placeholder_mask: returns all-False mask (no image tokens in mock) ---
+    def mock_get_placeholder_mask(input_ids, mm_token_type_ids=None):
+        mask = torch.zeros(input_ids.shape, dtype=torch.bool, device=input_ids.device)
+        return mask, None, None
+
+    mock_model.model.get_placeholder_mask.side_effect = mock_get_placeholder_mask
+
+    # --- get_image_features: not called when mask is all-False ---
+    # But define it just in case
+    def mock_get_image_features(pixel_values, image_position_ids=None, **kwargs):
+        output = MagicMock()
+        output.last_hidden_state = torch.randn(1, 64, 768)
+        return output
+
+    mock_model.model.get_image_features.side_effect = mock_get_image_features
 
     return mock_model
+
+
+def make_mock_processor(batch_size=2, seq_len=10):
+    """Create a mock processor that returns proper tensors."""
+    mock_processor = MagicMock()
+
+    def mock_call(text=None, images=None, return_tensors=None, padding=None, **kwargs):
+        B = len(text) if isinstance(text, list) else 1
+        result = MagicMock()
+        result.__getitem__ = lambda self, key: getattr(self, key)
+        result.get = lambda key, default=None: getattr(result, key, default)
+        result.input_ids = torch.randint(0, 100, (B, seq_len))
+        result.attention_mask = torch.ones(B, seq_len, dtype=torch.long)
+        result.mm_token_type_ids = torch.zeros(B, seq_len, dtype=torch.long)
+        result.pixel_values = None  # No actual images in mock
+        result.image_position_ids = None
+        return result
+
+    mock_processor.side_effect = mock_call
+    mock_processor.tokenizer.pad_token_id = 0
+
+    return mock_processor
 
 
 @pytest.fixture
