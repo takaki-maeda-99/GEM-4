@@ -75,15 +75,15 @@ class VLAPolicy(nn.Module):
             img_features = vision_outputs.last_hidden_state
             # Project to LLM space via embed_vision
             img_embeds = self.gemma.model.embed_vision(inputs_embeds=img_features)
-            image_embeds_list.append(img_embeds)
+            image_embeds_list.append(img_embeds.to(device))
 
         # 2. Encode language instruction
         text_inputs = self.processor.tokenizer(
             instructions, return_tensors="pt", padding=True, truncation=True
         ).to(device)
-        text_embeds = self.gemma.model.embed_tokens(text_inputs.input_ids)
+        text_embeds = self.gemma.model.embed_tokens(text_inputs.input_ids).to(device)
         # Track text attention mask for padding
-        text_attention_mask = text_inputs.attention_mask  # [B, text_len]
+        text_attention_mask = text_inputs.attention_mask.to(device)  # [B, text_len]
 
         # 3. Encode proprioception
         proprio_embeds = self.proprio_encoder(proprio)  # [B, 1, D]
@@ -121,7 +121,7 @@ class VLAPolicy(nn.Module):
             inputs_embeds=all_embeds,
             attention_mask=attention_mask,
         )
-        hidden_states = outputs.last_hidden_state
+        hidden_states = outputs.last_hidden_state.to(device)
 
         # 8. Extract [ACT] token features from the end
         num_act = self.config["num_action_tokens"]
