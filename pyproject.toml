@@ -7,7 +7,7 @@ name = "vla-gemma4"
 version = "0.1.0"
 requires-python = ">=3.11,<3.12"
 dependencies = [
-    "torch>=2.7.0",
+    "torch>=2.7.0,<2.8.0",
     "transformers>=5.5.0",
     "peft>=0.15.0",
     "accelerate>=0.25.0",

@@ -46,19 +46,18 @@ RTX 5070 Ti (16GB VRAM) での検証:
 ### Install (uv)
 
 ```bash
-uv sync
-uv pip install lerobot --no-deps
-uv pip install datasets huggingface_hub torchvision jsonlines draccus --index-strategy unsafe-best-match
+bash scripts/setup_env.sh
 ```
-
-> **Note:** lerobot は transformers >= 5.5.0 と依存が衝突するため `--no-deps` でインストールします。
 
 ### Install (pip)
 
 ```bash
 pip install -e ".[dev]"
-pip install lerobot
+pip install lerobot --no-deps
+pip install datasets huggingface_hub jsonlines draccus
 ```
+
+> **Note:** lerobot は transformers >= 5.5.0 と依存が衝突するため `--no-deps` でインストールします。
 
 ### Quick Test (動作確認)
 
