@@ -119,6 +119,9 @@ def evaluate_libero(
 
         for episode in range(n_episodes):
             env.reset()
+            # Reset temporal ensemble buffer for ACTHead
+            if hasattr(policy.action_head, "reset_ensemble"):
+                policy.action_head.reset_ensemble()
             obs = env.set_init_state(init_states[episode])
 
             for _ in range(5):
