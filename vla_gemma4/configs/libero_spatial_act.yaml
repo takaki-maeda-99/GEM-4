@@ -2,7 +2,7 @@
 # 7DOF EEF delta actions, 9D proprio, 2 cameras
 
 model_name: "google/gemma-4-E2B-it"
-num_action_tokens: 1
+num_action_tokens: 4
 visual_token_budget: 140
 
 action_dim: 7
@@ -23,10 +23,10 @@ lerobot_cameras:
 action_head:
   type: "act"
   d_model: 256
-  nhead: 8
-  num_layers: 6
-  dim_feedforward: 2048
-  dropout: 0.1
+  nhead: 4
+  num_layers: 2
+  dim_feedforward: 512
+  dropout: 0.0
   temporal_ensemble_m: 0.01
 
 training:
@@ -36,7 +36,7 @@ training:
     alpha: 16
     target_modules: ["q_proj", "v_proj"]
   batch_size: 16
-  lr: 5.0e-5
+  lr: 1.0e-4
   weight_decay: 0.01
   num_epochs: 1
   warmup_steps: 100

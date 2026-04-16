@@ -1,7 +1,7 @@
 # LIBERO libero_spatial benchmark config
 # 7DOF EEF delta actions, 9D proprio, 2 cameras
 
-model_name: "google/gemma-4-E2B-it"
+model_name: "google/gemma-4-E4B"
 num_action_tokens: 1
 visual_token_budget: 140
 
@@ -31,10 +31,10 @@ training:
     r: 8
     alpha: 16
     target_modules: ["q_proj", "v_proj"]
-  batch_size: 16
+  batch_size: 1
   lr: 1.0e-4
   weight_decay: 0.01
-  num_epochs: 1
+  num_epochs: 5
   warmup_steps: 100
   max_grad_norm: 1.0
   mixed_precision: "bf16"
@@ -45,7 +45,7 @@ data:
   dataset_name: "lerobot/libero_spatial_image"
   language_instruction_key: "task"
   default_instruction: "manipulation task"
-  normalizer_path: null
+  normalizer_path: "outputs/libero/action_stats.json"
 
 inference:
   quantization: "4bit"
