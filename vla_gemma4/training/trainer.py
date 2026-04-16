@@ -31,8 +31,9 @@ class VLATrainer:
             mixed_precision=train_cfg.get("mixed_precision", "no"),
         )
 
-        # Separate learning rates: higher for action head + custom modules
-        head_lr = train_cfg.get("head_lr", train_cfg["lr"] * 10)
+        # Separate learning rates for backbone vs action head
+        backbone_lr = train_cfg["lr"]
+        head_lr = train_cfg.get("head_lr", backbone_lr)
         backbone_params = []
         head_params = []
         for name, param in policy.named_parameters():
@@ -44,10 +45,10 @@ class VLATrainer:
                 backbone_params.append(param)
 
         self.optimizer = AdamW([
-            {"params": backbone_params, "lr": train_cfg["lr"]},
+            {"params": backbone_params, "lr": backbone_lr},
             {"params": head_params, "lr": head_lr},
         ], weight_decay=train_cfg["weight_decay"])
-        logger.info(f"Optimizer: backbone lr={train_cfg['lr']}, head lr={head_lr} "
+        logger.info(f"Optimizer: backbone lr={backbone_lr}, head lr={head_lr} "
                      f"(backbone={len(backbone_params)}, head={len(head_params)} param groups)")
 
         # LR scheduler: linear warmup then cosine decay
