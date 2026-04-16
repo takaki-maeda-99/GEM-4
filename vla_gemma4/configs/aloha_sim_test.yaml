@@ -31,7 +31,7 @@ training:
     r: 8
     alpha: 16
     target_modules: ["q_proj", "v_proj"]
-  batch_size: 32
+  batch_size: 16
   lr: 1.0e-4
   weight_decay: 0.01
   num_epochs: 1
