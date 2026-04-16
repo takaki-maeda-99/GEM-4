@@ -20,6 +20,18 @@ def _build_action_head(config: dict, input_dim: int) -> ActionHead:
             hidden_dims=head_config.get("hidden_dims"),
             gripper_as_binary=head_config.get("gripper_as_binary", False),
         )
+    elif head_type == "act":
+        from .action_heads.act_head import ACTHead
+        return ACTHead(
+            input_dim=input_dim,
+            action_dim=config["action_dim"],
+            chunk_size=config["chunk_size"],
+            d_model=head_config.get("d_model", 256),
+            nhead=head_config.get("nhead", 4),
+            num_layers=head_config.get("num_layers", 2),
+            dim_feedforward=head_config.get("dim_feedforward", 1024),
+            temporal_ensemble_m=head_config.get("temporal_ensemble_m", 0.01),
+        )
     else:
         raise ValueError(f"Unknown action head type: {head_type}")
 
