@@ -1,7 +1,7 @@
 # LIBERO libero_spatial benchmark config with ACTHead
 # 7DOF EEF delta actions, 9D proprio, 2 cameras
 
-model_name: "google/gemma-4-E4B"
+model_name: "google/gemma-4-E2B-it"
 num_action_tokens: 1
 visual_token_budget: 140
 
@@ -23,9 +23,10 @@ lerobot_cameras:
 action_head:
   type: "act"
   d_model: 256
-  nhead: 4
-  num_layers: 2
-  dim_feedforward: 1024
+  nhead: 8
+  num_layers: 6
+  dim_feedforward: 2048
+  dropout: 0.1
   temporal_ensemble_m: 0.01
 
 training:
@@ -34,10 +35,10 @@ training:
     r: 8
     alpha: 16
     target_modules: ["q_proj", "v_proj"]
-  batch_size: 1
-  lr: 1.0e-4
+  batch_size: 16
+  lr: 5.0e-5
   weight_decay: 0.01
-  num_epochs: 5
+  num_epochs: 1
   warmup_steps: 100
   max_grad_norm: 1.0
   mixed_precision: "bf16"
