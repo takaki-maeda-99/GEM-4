@@ -34,6 +34,7 @@ def main():
         default_instruction=config["data"]["default_instruction"],
         chunk_size=config["chunk_size"],
         video_backend="pyav",
+        tolerance_s=1e6,  # Relaxed for older dataset formats
     )
     logger.info(f"Dataset size: {len(dataset)}")
 
@@ -88,6 +89,7 @@ def main():
     policy.act_tokens = torch.nn.Parameter(
         torch.randn(1, num_act, hidden_dim, device=device) * 0.02
     )
+    policy.feature_norm = torch.nn.LayerNorm(hidden_dim).to(device)
     policy.action_head = _build_action_head(config, input_dim=hidden_dim).to(device)
 
     # ---- 3. Apply LoRA ----
@@ -126,9 +128,10 @@ def main():
             break
 
         try:
-            features = policy.encode(batch)
+            features = policy.encode(batch).float()
+            dev = next(policy.action_head.parameters()).device
             loss_dict = policy.action_head.compute_loss(
-                features, batch["actions"].to(features.device)
+                features.to(dev), batch["actions"].to(dev).float()
             )
 
             loss_dict["loss"].backward()

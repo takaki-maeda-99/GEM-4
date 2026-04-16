@@ -20,6 +20,7 @@ proprio_key: "observation.state"
 action_head:
   type: "mlp"
   hidden_dims: [512, 256]
+  gripper_as_binary: true  # EEF 7DOF: last dim is gripper [0,1]
 
 # Training
 training:

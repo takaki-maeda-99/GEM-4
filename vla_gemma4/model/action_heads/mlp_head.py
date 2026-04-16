@@ -6,7 +6,11 @@ from .base import ActionHead
 
 
 class MLPHead(ActionHead):
-    """MLP action head with separate MSE (position/rotation) and BCE (gripper) losses."""
+    """MLP action head with configurable loss.
+
+    When gripper_dim is set (default: None), the last dimension uses BCE loss
+    with sigmoid output. Otherwise, all dimensions use MSE loss.
+    """
 
     def __init__(
         self,
@@ -14,12 +18,12 @@ class MLPHead(ActionHead):
         action_dim: int = 7,
         chunk_size: int = 1,
         hidden_dims: list[int] | None = None,
+        gripper_as_binary: bool = False,
     ):
         super().__init__()
         self.action_dim = action_dim
         self.chunk_size = chunk_size
-        self.pose_dim = action_dim - 1
-        self.gripper_dim = 1
+        self.gripper_as_binary = gripper_as_binary
 
         if hidden_dims is None:
             hidden_dims = [512, 256]
@@ -36,22 +40,31 @@ class MLPHead(ActionHead):
 
     def compute_loss(self, features: Tensor, actions: Tensor, **kwargs) -> dict:
         pred = self._forward(features)
-        pred_pose = pred[:, :, :self.pose_dim]
-        pred_gripper = pred[:, :, self.pose_dim:]
-        target_pose = actions[:, :, :self.pose_dim]
-        target_gripper = actions[:, :, self.pose_dim:]
 
-        mse_loss = F.mse_loss(pred_pose, target_pose)
-        bce_loss = F.binary_cross_entropy_with_logits(pred_gripper, target_gripper)
-        loss = mse_loss + bce_loss
-
-        return {"loss": loss, "mse_loss": mse_loss, "bce_loss": bce_loss}
+        if self.gripper_as_binary:
+            # Split: all dims except last = MSE, last dim = BCE
+            pose_dim = self.action_dim - 1
+            mse_loss = F.mse_loss(pred[:, :, :pose_dim], actions[:, :, :pose_dim])
+            bce_loss = F.binary_cross_entropy_with_logits(
+                pred[:, :, pose_dim:], actions[:, :, pose_dim:]
+            )
+            loss = mse_loss + bce_loss
+            return {"loss": loss, "mse_loss": mse_loss, "bce_loss": bce_loss}
+        else:
+            # All dimensions: MSE
+            mse_loss = F.mse_loss(pred, actions)
+            return {"loss": mse_loss, "mse_loss": mse_loss}
 
     def predict(self, features: Tensor, **kwargs) -> Tensor:
         pred = self._forward(features)
-        pred_pose = pred[:, :, :self.pose_dim]
-        pred_gripper = torch.sigmoid(pred[:, :, self.pose_dim:])
-        return torch.cat([pred_pose, pred_gripper], dim=-1)
+
+        if self.gripper_as_binary:
+            pose_dim = self.action_dim - 1
+            pred_pose = pred[:, :, :pose_dim]
+            pred_gripper = torch.sigmoid(pred[:, :, pose_dim:])
+            return torch.cat([pred_pose, pred_gripper], dim=-1)
+        else:
+            return pred
 
     def _forward(self, features: Tensor) -> Tensor:
         x = features.squeeze(1)

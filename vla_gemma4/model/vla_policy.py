@@ -18,6 +18,20 @@ def _build_action_head(config: dict, input_dim: int) -> ActionHead:
             action_dim=config["action_dim"],
             chunk_size=config["chunk_size"],
             hidden_dims=head_config.get("hidden_dims"),
+            gripper_as_binary=head_config.get("gripper_as_binary", False),
+        )
+    elif head_type == "act":
+        from .action_heads.act_head import ACTHead
+        return ACTHead(
+            input_dim=input_dim,
+            action_dim=config["action_dim"],
+            chunk_size=config["chunk_size"],
+            d_model=head_config.get("d_model", 256),
+            nhead=head_config.get("nhead", 8),
+            num_layers=head_config.get("num_layers", 6),
+            dim_feedforward=head_config.get("dim_feedforward", 2048),
+            dropout=head_config.get("dropout", 0.1),
+            temporal_ensemble_m=head_config.get("temporal_ensemble_m", 0.01),
         )
     else:
         raise ValueError(f"Unknown action head type: {head_type}")
@@ -68,6 +82,9 @@ class VLAPolicy(nn.Module):
         # Learnable [ACT] tokens
         num_act = config["num_action_tokens"]
         self.act_tokens = nn.Parameter(torch.randn(1, num_act, hidden_dim) * 0.02)
+
+        # Normalize features before action head (prevents mode collapse)
+        self.feature_norm = nn.LayerNorm(hidden_dim)
 
         # Action head
         self.action_head = _build_action_head(config, input_dim=hidden_dim)
@@ -133,12 +150,10 @@ class VLAPolicy(nn.Module):
                 sample_imgs.append(Image.fromarray(img_np))
             all_pil_images.append(sample_imgs)
 
-        # Flatten images for processor (it expects a flat list)
-        flat_images = [img for sample_imgs in all_pil_images for img in sample_imgs]
-
+        # Processor expects images as list[list[PIL.Image]] matching text batch
         proc_inputs = self.processor(
             text=prompts,
-            images=flat_images,
+            images=all_pil_images,
             return_tensors="pt",
             padding=True,
         )
@@ -241,9 +256,11 @@ class VLAPolicy(nn.Module):
         return features
 
     def compute_loss(self, batch: dict) -> dict:
-        features = self.encode(batch)
-        actions = batch["actions"].to(features.device)
-        return self.action_head.compute_loss(features.to(self.action_head_device), actions.to(self.action_head_device))
+        features = self.encode(batch).float()  # Cast bf16 → float32 for action head
+        dev = self.action_head_device
+        features = self.feature_norm.to(dev)(features.to(dev))
+        actions = batch["actions"].to(dev).float()
+        return self.action_head.compute_loss(features.to(dev), actions)
 
     @property
     def action_head_device(self) -> torch.device:
@@ -251,5 +268,7 @@ class VLAPolicy(nn.Module):
 
     def predict(self, batch: dict) -> Tensor:
         with torch.no_grad():
-            features = self.encode(batch)
-            return self.action_head.predict(features.to(self.action_head_device))
+            features = self.encode(batch).float()
+            dev = self.action_head_device
+            features = self.feature_norm.to(dev)(features.to(dev))
+            return self.action_head.predict(features)

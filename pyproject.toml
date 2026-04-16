@@ -5,16 +5,19 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "vla-gemma4"
 version = "0.1.0"
-requires-python = ">=3.10"
+requires-python = ">=3.11,<3.12"
 dependencies = [
-    "torch>=2.1.0",
-    "transformers>=4.50.0",
-    "peft>=0.7.0",
+    "torch>=2.7.0,<2.8.0",
+    "transformers>=5.5.0",
+    "peft>=0.15.0",
     "accelerate>=0.25.0",
-    "lerobot>=0.1.0",
     "pyyaml>=6.0",
     "bitsandbytes>=0.41.0",
+    "av>=14.0.0",
+    "pillow>=10.0.0",
 ]
+# lerobot and its deps are installed via scripts/setup_env.sh
+# due to transformers version conflict (lerobot requires <5.5, Gemma 4 needs >=5.5)
 
 [project.optional-dependencies]
 dev = [
@@ -24,6 +27,19 @@ dev = [
 
 [tool.setuptools.packages.find]
 include = ["vla_gemma4*"]
+
+[tool.uv]
+extra-index-url = ["https://download.pytorch.org/whl/cu128"]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }
+torchaudio = { index = "pytorch-cu128" }
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
 
 [tool.pytest.ini_options]
 pythonpath = ["tests"]
