@@ -25,7 +25,7 @@ class TestACTHead:
         actions = torch.randn(2, 20, 7)
         loss_dict = act_head.compute_loss(features, actions)
         assert "loss" in loss_dict
-        assert "mse_loss" in loss_dict
+        assert "l1_loss" in loss_dict
         assert loss_dict["loss"].requires_grad
         assert loss_dict["loss"].item() >= 0
 
