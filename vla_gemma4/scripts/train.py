@@ -75,22 +75,25 @@ def build_policy(config: dict) -> VLAPolicy:
 
 
 def apply_lora(policy: VLAPolicy, config: dict) -> VLAPolicy:
-    """Apply LoRA to the LLM backbone and freeze ViT."""
+    """Apply LoRA to both LLM backbone and ViT."""
     from peft import LoraConfig, get_peft_model
 
     lora_cfg = config["training"]["lora"]
 
-    # Freeze vision tower
-    for param in policy.gemma.model.vision_tower.parameters():
-        param.requires_grad = False
-
-    # Target only language_model layers (avoid vision_tower's Gemma4ClippableLinear)
+    # Build target modules for LLM
     num_layers = policy.gemma.config.text_config.num_hidden_layers
     target_modules = [
         f"model.language_model.layers.{i}.self_attn.{proj}"
         for i in range(num_layers)
         for proj in lora_cfg["target_modules"]
     ]
+
+    # Also target ViT's Linear4bit layers (inside Gemma4ClippableLinear)
+    # Pattern: model.vision_tower.encoder.layers.X.self_attn.{q,k,v,o}_proj.linear
+    if lora_cfg.get("include_vision", True):
+        for name, mod in policy.gemma.model.vision_tower.named_modules():
+            if type(mod).__name__ == "Linear4bit":
+                target_modules.append(f"model.vision_tower.{name}")
 
     lora_config = LoraConfig(
         r=lora_cfg["r"],
