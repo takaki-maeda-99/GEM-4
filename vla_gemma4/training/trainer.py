@@ -31,11 +31,24 @@ class VLATrainer:
             mixed_precision=train_cfg.get("mixed_precision", "no"),
         )
 
-        self.optimizer = AdamW(
-            policy.parameters(),
-            lr=train_cfg["lr"],
-            weight_decay=train_cfg["weight_decay"],
-        )
+        # Separate learning rates: higher for action head + custom modules
+        head_lr = train_cfg.get("head_lr", train_cfg["lr"] * 10)
+        backbone_params = []
+        head_params = []
+        for name, param in policy.named_parameters():
+            if not param.requires_grad:
+                continue
+            if "action_head" in name or "proprio_encoder" in name or "act_tokens" in name or "feature_norm" in name:
+                head_params.append(param)
+            else:
+                backbone_params.append(param)
+
+        self.optimizer = AdamW([
+            {"params": backbone_params, "lr": train_cfg["lr"]},
+            {"params": head_params, "lr": head_lr},
+        ], weight_decay=train_cfg["weight_decay"])
+        logger.info(f"Optimizer: backbone lr={train_cfg['lr']}, head lr={head_lr} "
+                     f"(backbone={len(backbone_params)}, head={len(head_params)} param groups)")
 
         # LR scheduler: linear warmup then cosine decay
         warmup_steps = train_cfg["warmup_steps"]
