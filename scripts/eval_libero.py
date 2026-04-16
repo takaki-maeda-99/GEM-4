@@ -83,6 +83,7 @@ def evaluate_libero(
     max_steps: int = 300,
     seed: int = 42,
     record_dir: str | None = None,
+    normalizer=None,
 ) -> dict:
     """Run LIBERO evaluation and return results."""
     from libero.libero.benchmark import get_benchmark
@@ -137,6 +138,9 @@ def evaluate_libero(
                 batch = convert_obs_to_batch(obs, task.language, camera_keys)
                 with torch.no_grad():
                     action = policy.predict(batch)
+                # Denormalize if model was trained with normalized actions
+                if normalizer is not None:
+                    action = normalizer.denormalize(action.cpu())
                 action_np = action[0, 0].cpu().numpy()
                 obs, reward, done, info = env.step(action_np)
 
@@ -213,6 +217,14 @@ def main():
     else:
         logger.info("No checkpoint specified, using random weights")
 
+    # Load normalizer for denormalizing model outputs
+    normalizer = None
+    normalizer_path = config.get("data", {}).get("normalizer_path")
+    if normalizer_path:
+        from vla_gemma4.data.normalizer import Normalizer
+        normalizer = Normalizer.load(normalizer_path)
+        logger.info(f"Loaded normalizer from {normalizer_path}")
+
     results = evaluate_libero(
         policy=policy,
         suite_name=args.suite,
@@ -221,6 +233,7 @@ def main():
         max_steps=args.max_steps,
         seed=args.seed,
         record_dir=args.record,
+        normalizer=normalizer,
     )
 
     with open(args.output, "w") as f:
