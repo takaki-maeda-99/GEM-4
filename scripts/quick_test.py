@@ -89,6 +89,7 @@ def main():
     policy.act_tokens = torch.nn.Parameter(
         torch.randn(1, num_act, hidden_dim, device=device) * 0.02
     )
+    policy.feature_norm = torch.nn.LayerNorm(hidden_dim).to(device)
     policy.action_head = _build_action_head(config, input_dim=hidden_dim).to(device)
 
     # ---- 3. Apply LoRA ----
