@@ -27,9 +27,10 @@ def _build_action_head(config: dict, input_dim: int) -> ActionHead:
             action_dim=config["action_dim"],
             chunk_size=config["chunk_size"],
             d_model=head_config.get("d_model", 256),
-            nhead=head_config.get("nhead", 4),
-            num_layers=head_config.get("num_layers", 2),
-            dim_feedforward=head_config.get("dim_feedforward", 1024),
+            nhead=head_config.get("nhead", 8),
+            num_layers=head_config.get("num_layers", 6),
+            dim_feedforward=head_config.get("dim_feedforward", 2048),
+            dropout=head_config.get("dropout", 0.1),
             temporal_ensemble_m=head_config.get("temporal_ensemble_m", 0.01),
         )
     else:
