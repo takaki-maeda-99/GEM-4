@@ -92,12 +92,31 @@ class ACTHead(ActionHead):
         """エピソード開始時にバッファをクリア"""
 ```
 
+## 設計判断
+
+### num_action_tokens
+
+ACTHead でも `num_action_tokens: 1` のままとする。ACT の chunk_queries が cross-attention で features を参照するため、ソース側は1トークンでも十分な情報を持つ。`num_action_tokens` を増やすパターンは将来拡張として検証する。
+
+### gripper_as_binary
+
+ACTHead は常に全次元 MSE で学習する（`gripper_as_binary` パラメータを持たない）。理由：LIBERO のグリッパーは `{-1, 1}` でありBCE に適さない。設定ファイルの `gripper_as_binary` フィールドは ACTHead では無視される。
+
+### Temporal Ensemble の推論バッチサイズ
+
+Temporal Ensemble はステートフルなバッファを持つため、推論時は `B=1` を前提とする（eval_libero.py は1サンプルずつ推論するので問題ない）。
+
+### PyTorch 組み込みモジュールの使用
+
+`nn.TransformerDecoderLayer` / `nn.TransformerDecoder` を使用する。カスタム実装はしない。
+
 ## 設定ファイル
 
 `configs/libero_spatial_act.yaml` の差分（MLPとの違い）:
 
 ```yaml
-chunk_size: 20  # 1 → 20
+num_action_tokens: 1  # 変更なし（cross-attn ソースとして使う）
+chunk_size: 20        # 1 → 20
 
 action_head:
   type: "act"
@@ -106,7 +125,6 @@ action_head:
   num_layers: 2
   dim_feedforward: 1024
   temporal_ensemble_m: 0.01
-  gripper_as_binary: false
 ```
 
 ## 変更ファイル
@@ -118,7 +136,7 @@ action_head:
 
 ### 変更
 - `vla_gemma4/model/vla_policy.py` — `_build_action_head` に `"act"` タイプ追加
-- `scripts/eval_libero.py` — エピソード開始時に `reset_ensemble()` 呼び出し
+- `scripts/eval_libero.py` — エピソード開始時に `reset_ensemble()` 呼び出し（`hasattr` ガードで MLPHead との互換性を維持: `if hasattr(policy.action_head, 'reset_ensemble'): policy.action_head.reset_ensemble()`）
 
 ### 変更なし
 - `ActionHead` ABC
