@@ -60,8 +60,8 @@ class ACTHead(ActionHead):
 
     def compute_loss(self, features: Tensor, actions: Tensor, **kwargs) -> dict:
         pred = self._decode(features)
-        mse_loss = F.mse_loss(pred, actions)
-        return {"loss": mse_loss, "mse_loss": mse_loss}
+        l1_loss = F.l1_loss(pred, actions)
+        return {"loss": l1_loss, "l1_loss": l1_loss}
 
     def predict(self, features: Tensor, **kwargs) -> Tensor:
         pred_chunk = self._decode(features)
