@@ -154,7 +154,7 @@ def main():
     # Apply LoRA if configured
     if config["training"]["strategy"] == "lora":
         policy = apply_lora(policy, config)
-        logger.info("LoRA applied to LLM backbone, ViT frozen")
+        logger.info("LoRA applied to LLM backbone + ViT")
 
     # Train
     num_training_steps = len(dataloader) * config["training"]["num_epochs"]
