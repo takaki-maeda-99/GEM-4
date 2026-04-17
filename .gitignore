@@ -40,3 +40,6 @@ env/
 .DS_Store
 .env
 "auto_push.py" 
+~$* 
+auto_push.py 
+.txt 
