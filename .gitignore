@@ -39,3 +39,4 @@ env/
 # OS
 .DS_Store
 .env
+"auto_push.py" 
