@@ -3,6 +3,12 @@ outputs/
 checkpoint_step_*.pt
 *.ckpt
 
+# wandb
+wandb/
+
+# External reference clones
+VLA-Adapter/
+
 # Python
 __pycache__/
 *.py[cod]

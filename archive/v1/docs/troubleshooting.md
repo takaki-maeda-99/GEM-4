@@ -154,3 +154,95 @@
 **原因:** `build_policy()` は `VLAPolicy.__init__()` をバイパスして手動でモジュールを構築しているが、新しく追加した `feature_norm` が含まれていなかった。
 
 **対策:** `build_policy()` と `quick_test.py` の手動構築部分に `policy.feature_norm = torch.nn.LayerNorm(hidden_dim).to(device)` を追加。**教訓: `__init__` をバイパスする手動構築は、新しいモジュール追加時に漏れやすい。**
+
+---
+
+## 2026-04-17: `<start_of_image>` タグが特殊トークンとして認識されない
+
+**問題:** LIBERO rollout で全エピソード失敗。loss も 0.28 で下げ止まり。
+
+**原因:** `encode()` で画像プレースホルダーとして `<start_of_image>` というタグを使っていたが、Gemma 4 のトークナイザはこれを特殊トークンとして認識しない。結果、`<`, `start`, `_`, `of`, `_`, `image`, `>` の 7 個の普通トークンに分割され、**画像位置マーカーが完全に消失**。`mm_token_type_ids` が全て 0 になり、画像が一切埋め込まれていない状態で学習していた。
+
+**対策:** `apply_chat_template` 経由でプロンプトを構築するように変更。これにより正しい画像プレースホルダートークン (`<|image|>`, ID=258880) が 256 個並んで展開される。
+
+```python
+messages = [{"role": "user", "content": [
+    {"type": "image"}, {"type": "image"}, {"type": "text", "text": instr}
+]}]
+prompt = processor.apply_chat_template(messages, tokenize=False)
+# processor() に渡すと input_ids の画像プレースホルダーが展開される
+```
+
+**教訓:** 特殊トークンを直接プロンプトに書き込むのではなく、必ず processor の chat template 経由でビルドする。
+
+---
+
+## 2026-04-17: Vision features の次元が LLM hidden dim と不一致
+
+**問題:** `masked_scatter` で CUDA assertion エラー (`totalElements <= srcSize`)。
+
+**原因:** `get_image_features()` は ViT の出力そのまま（768次元）を返す。LLM の hidden dim は 1536。Gemma4 は内部で `embed_vision` モジュールを通して 768→1536 に投影しているが、手動で `get_image_features` を呼ぶだけではこの投影がスキップされる。
+
+**対策:** `get_image_features` の後に `embed_vision` を手動で呼ぶ。最終的には Gemma4 の native `forward()` に任せて全部の内部処理を自動化する方針に転換。
+
+---
+
+## 2026-04-17: LIBERO sim の proprio 形式が学習データと不一致
+
+**問題:** rollout で学習データに似た動きにならない。
+
+**原因:** 学習データ (LeRobot) の proprio は 8D で `[x, y, z, rx, ry, rz, gripper_left, gripper_right]` (xyz + euler/axis-angle + 2-finger gripper)。メタデータには `[x, y, z, rx, ry, rz, rw, gripper]` (quaternion + 1D gripper) と書いてあったが**嘘**。一方 `eval_libero.py` はメタに従って `[eef_pos(3) + eef_quat(4) + gripper_mean(1)]` の 8D を作っていた。
+
+**対策:** `robot0_eef_quat` を euler angle に変換、`robot0_gripper_qpos` (2D) をそのまま使用。
+
+```python
+from scipy.spatial.transform import Rotation as R
+eef_euler = R.from_quat(obs["robot0_eef_quat"]).as_euler("xyz")
+proprio = np.concatenate([obs["robot0_eef_pos"], eef_euler, obs["robot0_gripper_qpos"]])
+```
+
+**教訓:** データセットのメタデータ (`names`) は信用せず、実際のデータを見て形式を確認する。
+
+---
+
+## 2026-04-17: LIBERO sim の agentview が 180 度回転
+
+**問題:** rollout 動画と学習データ動画を比較すると向きが違う。
+
+**原因:** LIBERO の `OffScreenRenderEnv` は agentview を上下反転・左右反転された状態で返す。`make_composite_frame` では `[::-1]` で垂直反転だけしていたが、実際は 180 度回転（縦横両方反転）が必要。
+
+**対策:** MSE 比較で向きを特定。
+
+| 変換 | MSE |
+|---|---|
+| そのまま | 6194 |
+| 縦反転 | 4835 |
+| 横反転 | 3902 |
+| **180度回転** | **538** ✓ |
+
+`convert_obs_to_batch` と `make_composite_frame` の両方で `agent_image[::-1, ::-1]` に修正。
+
+**教訓:** 視覚系のデバッグは数値比較 (MSE) で客観的に判断する。
+
+---
+
+## 2026-04-17: Bridge Attention の post-norm で ActionQuery の勾配消失
+
+**問題:** 新アーキテクチャ (frozen VLM + Bridge + Flow matching) で 1 サンプルすら overfit できない (MSE 0.21 で頭打ち)。
+
+**原因:** Bridge Attention が post-norm 構造 (`query = norm(query + attn(query))`)、かつ ActionQuery の初期化が `* 0.02` と小さすぎた。初期値が小さい query が cross-attention で KV の混合結果に飲まれて全 query 位置で同一化。その後の self-attention と LayerNorm で完全に同じ値になり、**ActionQuery の勾配が完全にゼロ** になっていた。
+
+**確認方法:**
+- `action_query.grad.norm() == 0`
+- `latents[0].std(0).mean() == 0` (20 query 位置で全て同じ出力)
+
+**対策:**
+1. **Pre-norm** 構造に変更 (`h = norm(query); query = query + attn(h)`)
+2. ActionQuery の init scale を 0.02 → 0.5 に上げる
+
+これで 1 サンプル overfit MSE が 0.21 → **0.0005** に改善。
+
+**教訓:**
+- 新しい attention 構造を組むときは post-norm より pre-norm を優先 (gradient flow が安定)
+- 勾配消失は loss カーブだけでは判断できない。`.grad.norm()` と出力の多様性で直接確認する
+- Synthetic data での overfit と real data での overfit でアーキテクチャの健全性が違って見えることがある
