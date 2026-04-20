@@ -1,0 +1,60 @@
+{
+  "phase": "1c",
+  "model_id": "google/gemma-4-E2B",
+  "vision_backbone_id": "dinosiglip-vit-so-224px",
+  "total_trainable_M": 675.138,
+  "baseline_1b6": {
+    "fwd_gb": 14.97,
+    "bwd_gb": 15.78,
+    "trainable_M": 675.14
+  },
+  "regression_vs_1b6": {
+    "fwd_delta": 0.0,
+    "bwd_delta": -0.001
+  },
+  "results": [
+    {
+      "B": 1,
+      "L": 591,
+      "fwd_gb": 14.97,
+      "bwd_gb": 15.779,
+      "opt_first_gb": 16.409,
+      "opt_steady_gb": 16.412,
+      "loss1": 0.851562,
+      "loss2": 2.25
+    },
+    {
+      "B": 2,
+      "L": 591,
+      "fwd_gb": 19.987,
+      "bwd_gb": 20.501,
+      "opt_first_gb": 16.434,
+      "opt_steady_gb": 16.439,
+      "loss1": 1.445312,
+      "loss2": 1.03125
+    },
+    {
+      "B": 4,
+      "L": 591,
+      "fwd_gb": 25.66,
+      "bwd_gb": 25.732,
+      "opt_first_gb": 16.451,
+      "opt_steady_gb": 16.453,
+      "loss1": 0.894531,
+      "loss2": 0.84375
+    },
+    {
+      "B": 8,
+      "L": 591,
+      "fwd_gb": 36.822,
+      "bwd_gb": 36.822,
+      "opt_first_gb": 16.458,
+      "opt_steady_gb": 16.454,
+      "loss1": 0.832031,
+      "loss2": 0.8125
+    }
+  ],
+  "oom_at": null,
+  "recommended_B": 8,
+  "escalation": null
+}

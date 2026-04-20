@@ -1,0 +1,23 @@
+{
+  "phase": "1b.4",
+  "vision_backbone": "DummyVisionBackbone (DINO+SigLIP \u5b9f\u4f53\u306f 1b.6 \u3067\u5dee\u66ff)",
+  "B": 1,
+  "L": 591,
+  "prompt_len": 12,
+  "forward_peak_gb": 12.149,
+  "backward_peak_gb": 12.315,
+  "backward_delta_gb": 0.166,
+  "vision_projector_params_M": 31.731,
+  "action_queries_params_M": 0.098,
+  "vision_pair_diff_max": 138.75,
+  "vision_pos_std": 8.644758224487305,
+  "action_pair_diff_max": 52.9375,
+  "action_pos_std": 8.220930099487305,
+  "prompt_diff_max": 67.75,
+  "prompt_diff_mean": 6.886013984680176,
+  "vp_fc1_grad_abs_sum": 102542344192.0,
+  "vp_fc2_grad_abs_sum": 182536110080.0,
+  "vp_fc3_grad_abs_sum": 32078036992.0,
+  "aq_grad_abs_sum": 18554258718720.0,
+  "llm_leak": 0
+}

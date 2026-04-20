@@ -1,0 +1,75 @@
+{
+  "phase": "1d.a",
+  "data_root_dir": "data/modified_libero_rlds",
+  "data_root_abs": "/misc/dl00/takaki/vla-gemma-4/data/modified_libero_rlds",
+  "dataset_name": "libero_spatial_no_noops",
+  "versions": [
+    "1.0.0"
+  ],
+  "batch_size": 8,
+  "num_batches_iterated": 3,
+  "prompt_max_len": 20,
+  "dataset_length": 52970,
+  "total_trainable_M": 675.138,
+  "raw_rlds_sample_keys": {
+    "observation.image_primary": "shape=(1, 224, 224, 3) dtype=uint8",
+    "observation.image_wrist": "shape=(1, 224, 224, 3) dtype=uint8",
+    "observation.proprio": "shape=(1, 8) dtype=float32",
+    "observation.timestep": "shape=(1,) dtype=int32",
+    "observation.pad_mask_dict.image_primary": "shape=(1,) dtype=bool",
+    "observation.pad_mask_dict.image_wrist": "shape=(1,) dtype=bool",
+    "observation.pad_mask_dict.proprio": "shape=(1,) dtype=bool",
+    "observation.pad_mask_dict.timestep": "shape=(1,) dtype=bool",
+    "observation.pad_mask": "shape=(1,) dtype=bool",
+    "task.language_instruction": "str len=71 val='pick up the black bowl next to the cookie box and place it o'",
+    "task.pad_mask_dict.language_instruction": "shape=() dtype=bool",
+    "task.pad_mask_dict.image_primary": "shape=() dtype=bool",
+    "task.pad_mask_dict.image_wrist": "shape=() dtype=bool",
+    "task.pad_mask_dict.proprio": "shape=() dtype=bool",
+    "task.pad_mask_dict.timestep": "shape=() dtype=bool",
+    "task.image_primary": "shape=(224, 224, 3) dtype=uint8",
+    "task.image_wrist": "shape=(224, 224, 3) dtype=uint8",
+    "task.proprio": "shape=(8,) dtype=float32",
+    "task.timestep": "shape=() dtype=int32",
+    "action": "shape=(8, 7) dtype=float32",
+    "dataset_name": "str len=23 val='libero_spatial_no_noops'",
+    "absolute_action_mask": "shape=(7,) dtype=bool"
+  },
+  "batches": [
+    {
+      "batch_idx": 0,
+      "B": 8,
+      "L": 599,
+      "fwd_gb": 34.914,
+      "bwd_gb": 34.914,
+      "loss": 0.539062,
+      "dev_sec": 0.004,
+      "first_language": "pick up the black bowl on the wooden cabinet and place it on the plate"
+    },
+    {
+      "batch_idx": 1,
+      "B": 8,
+      "L": 599,
+      "fwd_gb": 34.913,
+      "bwd_gb": 34.913,
+      "loss": 0.535156,
+      "dev_sec": 0.003,
+      "first_language": "pick up the black bowl from table center and place it on the plate"
+    },
+    {
+      "batch_idx": 2,
+      "B": 8,
+      "L": 599,
+      "fwd_gb": 34.913,
+      "bwd_gb": 34.913,
+      "loss": 0.523438,
+      "dev_sec": 0.003,
+      "first_language": "pick up the black bowl next to the ramekin and place it on the plate"
+    }
+  ],
+  "regression_vs_1c_b8": {
+    "fwd_delta": -1.906,
+    "bwd_delta": -1.906
+  },
+  "within_tol": true
+}

@@ -1,0 +1,41 @@
+{
+  "phase": "1b.6",
+  "model_id": "google/gemma-4-E2B",
+  "vision_backbone_id": "dinosiglip-vit-so-224px",
+  "vision_backbone_download_sec": 8.51,
+  "B": 1,
+  "L": 591,
+  "prompt_len": 12,
+  "vision_embed_dim": 2176,
+  "num_vision_patches": 512,
+  "llm_trainable": 0,
+  "vision_backbone_trainable": 0,
+  "total_trainable_M": 675.138,
+  "breakdown_M": {
+    "action_head": 639.885,
+    "vision_projector": 32.779,
+    "proprio_projector": 2.375,
+    "action_queries": 0.098
+  },
+  "forward_peak_gb": 14.97,
+  "backward_peak_gb": 15.779,
+  "backward_delta_gb": 0.809,
+  "predicted_shape": [
+    1,
+    8,
+    7
+  ],
+  "loss": 1.1484375,
+  "grad_abs_sums": {
+    "action_queries.weight": 21233664.0,
+    "vision_projector.fc1.weight": 232448.0,
+    "vision_projector.fc3.weight": 93184.0,
+    "proprio_projector.fc1.weight": 0.030517578125,
+    "action_head.model.fc1.weight": 7456.0,
+    "action_head.model.fc2.weight": 756.0
+  },
+  "llm_leak": 0,
+  "vb_leak": 0,
+  "prompt_diff_max": 75.375,
+  "prompt_diff_mean": 6.92928409576416
+}
