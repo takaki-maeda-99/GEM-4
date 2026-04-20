@@ -30,11 +30,12 @@ VLA-Adapter/vla-scripts/*
 
 # Local artifacts (大容量、track しない)
 /runs/
-/data/
-!data/  # data dir 自体は keep (LIBERO data 置き場を explicit 表示)
+# data: LIBERO raw は ignore、Stage 3 OXE の tfrecord も ignore、
+# ただし Phase 3a-2 dataset_statistics.json (< 4 KB) は reference で track
 data/modified_libero_rlds/
 data/libero/
-data/stage3_openx/
+data/stage3_openx/*/0.1.0/
+data/stage3_openx/downloads/
 .claude/
 scripts/gemma4/__pycache__/
 scripts/gemma4/*.log

@@ -1966,9 +1966,77 @@ Backward compat 確認: `num_pretrain_datasets=0` で `soft_prompt_library=None`
 
 Soft prompt pretrain parameter 量: `num_pretrain_datasets=3 × 32 tokens × 1536 dim × 4 byte = 590 KB` per config、trainable 675M に対して 0.022% の微小増分、memory / throughput 影響は無視可能。
 
-### Phase 3b-3/4 / 3a-2/3/4 は次 session で着手
-- Phase 3a-2: Taco Play + Fractal の dataset_statistics.json 計算
-- Phase 3a-3: Multi-dataset loader (dataset_id 付与、action 正規化 EEF+Rotate6D+gripper binary)
-- Phase 3a-4: Pipeline 動作確認
-- Phase 3b-3: finetune_gemma4.py に pretrain mode + custom LR param groups + two-step adaptation 追加
-- Phase 3b-4: 100 step smoke (Check-in #27)
+### Phase 3a-2 完了 (2026-04-20 20:42、65 分)
+
+`scripts/stage3/compute_dataset_statistics.py` で canonical 7-dim action の q01/q99 計算:
+
+| Dataset | Episodes | Transitions | 計算時間 | Action field mapping |
+|---|---|---|---|---|
+| taco_play | 3,242 | 213,972 | ~1 min | `action.rel_actions_world` (7 dim 直接) |
+| fractal20220817_data | 87,212 | 3,786,400 | ~64 min | concat(`world_vector(3)`, `rotation_delta(3)`, `gripper_closedness_action(1)`) |
+
+Canonical 7-dim schema 統一: `[Δx, Δy, Δz, Δrx, Δry, Δrz, gripper]`、mask=[T,T,T,T,T,T,F]。
+
+**Taco vs Fractal q99 比較**:
+
+| dim | Taco q99 | Fractal q99 | 観察 |
+|---|---|---|---|
+| Δx | 0.65 | 0.18 | Taco は 3-4x 大きい delta (Franka worldframe、大きめ movement) |
+| Δy | 1.00 | 0.15 | Taco は 6x 大きい |
+| Δz | 0.95 | 0.22 | Taco は 4x 大きい |
+| Δrx | 0.69 | 0.59 | ほぼ同等 |
+| Δry | 0.63 | 0.35 | Taco 1.8x |
+| Δrz | 1.62 | 0.45 | Taco 3.6x |
+| gripper | 1.0 | 1.0 | 両 dataset binary-pre |
+
+→ Fractal はより細かい EEF 動作 (RT-1 は delta-based control、保守的)、Taco は大きめ (Franka + manipulation、動作 range 広)。**dataset 固有 q01/q99 で正規化することで両方を [-1, 1] に scale 統一**、pretrain 時の共有 module が embodiment-specific scale に偏らないようにする。
+
+Output: `data/stage3_openx/<name>/dataset_statistics.json` + `combined_dataset_statistics.json`。
+
+### Phase 3a-3 完了 (2026-04-20 夜、Phase 3a-2 と並行、code 完成)
+
+Deliverable: `scripts/stage3/multi_dataset_loader.py`
+- `MultiDatasetPretrainDataset(IterableDataset)`: weighted sampling across Taco/Fractal
+- DATASET_ID_MAP: `{"taco_play": 0, "fractal20220817_data": 1}` (SoftPromptLibrary indexing)
+- DEFAULT_WEIGHTS: `{"taco_play": 0.30, "fractal20220817_data": 0.70}` (User plan §7、Bridge skip 再正規化)
+- Per-dataset action/image extractor (Phase 3a-2 と同じ canonical 抽出)
+- Gemma4BatchTransform 互換 dict yield (pixel_values dict、input_ids、proprio zeros、actions normalized、dataset_id、language)
+
+Collate: `collate_pretrain` = stacked tensors + list of languages。VLAAdapterGemma4.forward との直接互換。
+
+### Phase 3b-3 完了 (2026-04-20 夜、finetune_gemma4.py 拡張、X-VLA recipe 反映)
+
+`VLA-Adapter/vla-scripts/finetune_gemma4.py` に Stage 3 pretrain mode 追加:
+
+FinetuneConfig 新規 9 field (Stage 3 Pretrain):
+- `pretrain_mode: bool = False` / `num_pretrain_datasets: int = 0` (SoftPromptLibrary 有効化)
+- `num_soft_prompt_tokens: int = 32` (X-VLA 準拠)
+- `learning_coef: float = 0.25` (vision_projector + soft_prompt に backbone × 1/4)
+- `pretrain_freeze_steps: int = 1000` (prompt warmup only phase)
+- `pretrain_warmup_steps: int = 2000` (post-freeze linear warmup)
+- `pretrain_weight_decay: float = 0.0` (X-VLA recipe、Stage 2 は 0.01)
+- `pretrain_betas_beta2: float = 0.95` (X-VLA、Stage 2 は PyTorch default 0.999)
+- `hard_stop_datetime: str = ""` (R19 5/13 deadline)
+
+新規 helpers:
+- `build_pretrain_dataloader`: MultiDatasetPretrainDataset 包む
+- `build_pretrain_optimizer`: 4 param groups (vision_projector + soft_prompt_library at base×coef、action_head/proprio/queries at base)
+- `update_pretrain_lrs`: X-VLA 流 two-step LR
+  - step < freeze_steps: soft_prompt_library only (他 LR=0)
+  - freeze ≤ step < freeze+warmup: linear warmup per group
+  - step >= freeze+warmup: base LR 維持 (cosine decay 非採用、時間制約 hard_stop_datetime 型)
+
+finetune() 本体分岐:
+- `build_model` に soft prompt config 伝播
+- `pretrain_mode=True` で dataloader / optimizer / scheduler 切替
+- forward で `dataset_id=batch["dataset_id"]` 渡し (SoftPromptLibrary 入力)
+- hard_stop_datetime check 各 step (R19)
+- run_id 命名差別化: `{gemma}+pretrain-nd{N}-sp{T}+...`
+
+Backward compat: `pretrain_mode=False` で Stage 1-2 完全維持、Phase 2e 進行中 instance に影響なし。
+
+Stage 2 AdamW default betas 確認: 我々の Stage 2 finetune_gemma4.py は `AdamW(...)` を explicit `betas` なしで call、PyTorch default `(0.9, 0.999)`。Stage 3 pretrain は X-VLA 準拠 `(0.9, 0.95)` を明示指定。
+
+### Phase 3a-4 / 3b-4 smoke は GPU 確保後に実施
+- GPU 2 or 6 or 7 で 1 batch verify + 100 step smoke (~30-60 min)
+- Phase 2e 進行中 GPU 0 非干渉、GPU 2-7 利用可能帯
