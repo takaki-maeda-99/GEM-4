@@ -149,18 +149,50 @@ class FinetuneConfig:
     smoke_max_steps: int = 100
     smoke_save_step: int = 50
     smoke_run_resume_check: bool = True
+
+    # --- Stage 3 Pretrain mode (X-VLA Soft Prompt、5/13 hard deadline) ---
+    # pretrain_mode=True で multi-dataset pretrain、SoftPromptLibrary 有効化 + dataset_id 付与 + custom LR
+    # false の場合 Stage 1-2 動作完全互換 (backward compat)
+    pretrain_mode: bool = False
+    num_pretrain_datasets: int = 0            # 0=disabled、2=Taco+Fractal、3=+自前等
+    num_soft_prompt_tokens: int = 32          # X-VLA 原実装 len_soft_prompts=32 と一致
+    # Custom LR: X-VLA の learning_coef (vision_projector + soft_prompt に backbone LR × coef)
+    learning_coef: float = 0.25               # User plan §R21 "1/4 backbone" = 0.25
+    # X-VLA 流 two-step adaptation (Plan §3b-3):
+    #   step < freeze_steps: soft_prompt のみ train (他 LR=0、prompt warmup)
+    #   freeze_steps ≤ step: joint、linear warmup warmup_steps、以降 base LR
+    pretrain_freeze_steps: int = 1000
+    pretrain_warmup_steps: int = 2000
+    # X-VLA recipe default (Stage 2 default と差分、明示上書き):
+    #   weight_decay 0.0 (Stage 2 は 0.01、pretrain は 多数 data で 正則化過多回避)
+    #   betas (0.9, 0.95) (Stage 2 は PyTorch default (0.9, 0.999))
+    pretrain_weight_decay: float = 0.0        # 上書き、pretrain 時のみ weight_decay の代わりに使用
+    pretrain_betas_beta2: float = 0.95        # AdamW beta2 (beta1=0.9 固定、X-VLA 準拠)
+    # 5/13 hard deadline (R19)、empty で disabled
+    hard_stop_datetime: str = ""              # e.g. "2026-05-13 00:00:00"
     # fmt: on
 
 
 def build_run_id(cfg: FinetuneConfig) -> str:
     gemma_short = cfg.gemma_model_id.split("/")[-1].lower().replace(".", "-")
-    parts = [
-        gemma_short,
-        cfg.dataset_name,
-        f"b{cfg.batch_size * cfg.grad_accumulation_steps}",
-        f"lr-{cfg.learning_rate}",
-        f"wu-{cfg.lr_warmup_steps}",
-    ]
+    if cfg.pretrain_mode:
+        # Stage 3 pretrain identifier (dataset_name の代わりに pretrain prefix)
+        parts = [
+            gemma_short,
+            f"pretrain-nd{cfg.num_pretrain_datasets}-sp{cfg.num_soft_prompt_tokens}",
+            f"b{cfg.batch_size * cfg.grad_accumulation_steps}",
+            f"lr-{cfg.learning_rate}",
+            f"coef-{cfg.learning_coef}",
+            f"fr-{cfg.pretrain_freeze_steps}-wu-{cfg.pretrain_warmup_steps}",
+        ]
+    else:
+        parts = [
+            gemma_short,
+            cfg.dataset_name,
+            f"b{cfg.batch_size * cfg.grad_accumulation_steps}",
+            f"lr-{cfg.learning_rate}",
+            f"wu-{cfg.lr_warmup_steps}",
+        ]
     if cfg.smoke_mode:
         parts.append("smoke")
     if cfg.run_id_note:
@@ -208,11 +240,17 @@ def build_model(cfg: FinetuneConfig, device: torch.device) -> tuple[VLAAdapterGe
         proprio_dim=cfg.proprio_dim,
         action_dim=cfg.action_dim,
         num_action_chunks=cfg.num_action_chunks,
+        num_pretrain_datasets=cfg.num_pretrain_datasets,   # Stage 3: 0 で disable、>=1 で SoftPromptLibrary 構築
+        num_soft_prompt_tokens=cfg.num_soft_prompt_tokens,
     ).to(device, dtype=torch.bfloat16)
     model_vla.train()
 
     total_trainable = sum(p.numel() for p in model_vla.parameters() if p.requires_grad) / 1e6
-    assert abs(total_trainable - 675.138) < 0.1, f"trainable regressed: {total_trainable:.3f}M"
+    # Soft Prompt 有効化時は trainable 数 +num_datasets × 32 × 1536 × 4 byte / 1M param 上乗せ許容
+    soft_prompt_expected_M = cfg.num_pretrain_datasets * cfg.num_soft_prompt_tokens * 1536 / 1e6
+    expected = 675.138 + soft_prompt_expected_M
+    assert abs(total_trainable - expected) < 0.5, \
+        f"trainable regressed: expected {expected:.3f}M (675.138 + {soft_prompt_expected_M:.3f}M soft prompt), got {total_trainable:.3f}M"
 
     return model_vla, tok, vision_backbone
 
@@ -238,6 +276,102 @@ def build_dataloader(cfg: FinetuneConfig, tok, vision_backbone) -> DataLoader:
         collate_fn=collate_gemma4,
         num_workers=0,   # RLDS 内部並列、外側 workers=0 必須
     )
+
+
+def build_pretrain_dataloader(cfg: FinetuneConfig, tok, vision_backbone) -> DataLoader:
+    """Stage 3 pretrain: MultiDatasetPretrainDataset (Taco + Fractal) を DataLoader に包む."""
+    sys.path.insert(0, str(REPO_ROOT / "scripts" / "stage3"))
+    from multi_dataset_loader import MultiDatasetPretrainDataset, collate_pretrain
+    dataset = MultiDatasetPretrainDataset(
+        tokenizer=tok,
+        image_transform=vision_backbone.image_transform,
+        num_actions_chunk=cfg.num_action_chunks,
+    )
+    return DataLoader(
+        dataset,
+        batch_size=cfg.batch_size,
+        sampler=None,
+        collate_fn=collate_pretrain,
+        num_workers=0,
+    )
+
+
+def build_pretrain_optimizer(model_vla, cfg: FinetuneConfig, inner_model) -> AdamW:
+    """Stage 3 pretrain 用 custom LR param groups (X-VLA 流、User plan §R21 準拠).
+
+    4 group 構成:
+      - vision_projector:      LR = base × learning_coef (= base × 0.25)
+      - soft_prompt_library:   LR = base × learning_coef
+      - action_head + proprio_projector + action_queries: LR = base
+      - (LLM + vision_backbone は frozen、requires_grad=False で除外)
+
+    各 group の name は train loop 側で LR scheduler (freeze_steps + warmup_steps) が参照。
+    """
+    base_lr = cfg.learning_rate
+    coef = cfg.learning_coef
+    wd = cfg.pretrain_weight_decay
+    betas = (0.9, cfg.pretrain_betas_beta2)
+
+    # inner_model (DDP unwrap 済 VLAAdapterGemma4) から直接 module 取得
+    vproj = list(inner_model.vision_projector.parameters())
+    pproj = list(inner_model.proprio_projector.parameters())
+    aq = list(inner_model.action_queries.parameters())
+    ah = list(inner_model.action_head.parameters())
+    sp = list(inner_model.soft_prompt_library.parameters()) if inner_model.soft_prompt_library is not None else []
+
+    # 全 trainable ID set、漏れ検知用
+    expected_ids = set(id(p) for p in (vproj + pproj + aq + ah + sp))
+    actual_trainable = set(id(p) for p in model_vla.parameters() if p.requires_grad)
+    missing = actual_trainable - expected_ids
+    assert not missing, f"trainable param not in any group: {len(missing)} params、設計漏れ"
+
+    param_groups = [
+        {"name": "vision_projector",    "params": vproj, "lr": base_lr * coef, "weight_decay": wd},
+        {"name": "soft_prompt_library", "params": sp,    "lr": base_lr * coef, "weight_decay": wd},
+        {"name": "action_head",         "params": ah,    "lr": base_lr,        "weight_decay": wd},
+        {"name": "proprio_projector",   "params": pproj, "lr": base_lr,        "weight_decay": wd},
+        {"name": "action_queries",      "params": aq,    "lr": base_lr,        "weight_decay": wd},
+    ]
+    opt = AdamW(param_groups, betas=betas)
+    return opt
+
+
+def update_pretrain_lrs(optimizer: AdamW, step: int, cfg: FinetuneConfig) -> dict:
+    """X-VLA 流 two-step adaptation LR スケジュール.
+
+      step < freeze_steps: soft_prompt_library のみ train (他 LR=0、action_head/etc は frozen)
+      freeze_steps <= step < freeze_steps + warmup_steps: linear warmup 0 → base_lr (per group base)
+      freeze_steps + warmup_steps <= step: base_lr 維持
+
+    戻り値: {group_name: current_lr} (log 用)
+    """
+    base_lr = cfg.learning_rate
+    coef = cfg.learning_coef
+    freeze = cfg.pretrain_freeze_steps
+    warmup = cfg.pretrain_warmup_steps
+    base_map = {
+        "vision_projector":    base_lr * coef,
+        "soft_prompt_library": base_lr * coef,
+        "action_head":         base_lr,
+        "proprio_projector":   base_lr,
+        "action_queries":      base_lr,
+    }
+    current = {}
+    for g in optimizer.param_groups:
+        name = g["name"]
+        target = base_map[name]
+        if step < freeze:
+            # prompt warmup only: soft_prompt_library のみ target LR 維持、他 0
+            new_lr = target if name == "soft_prompt_library" else 0.0
+        elif step < freeze + warmup:
+            # post-freeze linear warmup
+            progress = (step - freeze) / max(1, warmup)
+            new_lr = target * progress
+        else:
+            new_lr = target
+        g["lr"] = new_lr
+        current[name] = new_lr
+    return current
 
 
 def move_batch_to_device(batch, device, dtype=torch.bfloat16):
@@ -453,6 +587,13 @@ def finetune(cfg: FinetuneConfig) -> None:
     if cfg.smoke_mode:
         cfg.max_steps = cfg.smoke_max_steps
 
+    # --- Pretrain mode assertions (Stage 3、R18-R21) ---
+    if cfg.pretrain_mode:
+        assert cfg.num_pretrain_datasets > 0, \
+            "pretrain_mode=True requires num_pretrain_datasets >= 1 (SoftPromptLibrary 構築用)"
+        # X-VLA recipe: pretrain_weight_decay (= 0.0 default) を使用
+        # Stage 2 fine-tune mode では cfg.weight_decay (= 0.01) を使用、両立
+
     run_id = build_run_id(cfg)
     run_dir = cfg.run_root_dir / run_id
     if is_main_process:
@@ -492,9 +633,14 @@ def finetune(cfg: FinetuneConfig) -> None:
     model_vla, tok, vision_backbone = build_model(cfg, device)
     rprint(f"  model loaded in {time.time()-t0:.1f}s")
 
-    rprint(f"\n=== Building data pipeline ({cfg.data_root_dir}) ===")
+    rprint(f"\n=== Building data pipeline ===")
     t0 = time.time()
-    loader = build_dataloader(cfg, tok, vision_backbone)
+    if cfg.pretrain_mode:
+        rprint(f"  mode: Stage 3 multi-dataset pretrain (Taco + Fractal)")
+        loader = build_pretrain_dataloader(cfg, tok, vision_backbone)
+    else:
+        rprint(f"  mode: Stage 2 single-dataset ({cfg.data_root_dir})")
+        loader = build_dataloader(cfg, tok, vision_backbone)
     rprint(f"  dataloader built in {time.time()-t0:.1f}s")
 
     # --- DDP wrap (R15): model_vla → DDP(model_vla)、frozen param は all-reduce 対象外 (requires_grad=False) ---
@@ -517,12 +663,36 @@ def finetune(cfg: FinetuneConfig) -> None:
     # --- Optimizer / Scheduler ---
     # DDP wrap 後でも parameters() は underlying module を返す、requires_grad=True のみ collect
     trainable_params = [p for p in model_vla.parameters() if p.requires_grad]
-    optimizer = AdamW(trainable_params, lr=cfg.learning_rate, weight_decay=cfg.weight_decay)
-    original_lr = optimizer.param_groups[0]["lr"]
-    scheduler = MultiStepLR(optimizer, milestones=[cfg.num_steps_before_decay], gamma=0.1)
-    rprint(f"\nOptimizer: AdamW(lr={original_lr}, wd={cfg.weight_decay})")
-    rprint(f"Scheduler: MultiStepLR(milestones=[{cfg.num_steps_before_decay}], gamma=0.1)")
-    rprint(f"Warmup: 10% → 100% linear over {cfg.lr_warmup_steps} steps (原 finetune.py:1060-1065 準拠)")
+    if cfg.pretrain_mode:
+        # Stage 3: X-VLA 流 custom LR param groups + betas=(0.9, 0.95) + wd=0.0
+        optimizer = build_pretrain_optimizer(model_vla, cfg, inner_model)
+        scheduler = None   # pretrain は update_pretrain_lrs で per-step LR 制御、MultiStepLR 不使用
+        rprint(f"\nOptimizer: AdamW pretrain mode")
+        rprint(f"  betas=(0.9, {cfg.pretrain_betas_beta2})、wd={cfg.pretrain_weight_decay}")
+        rprint("  param groups:")
+        for g in optimizer.param_groups:
+            rprint(f"    {g['name']}: lr={g['lr']:.2e}")
+        rprint(f"  LR schedule: freeze_steps={cfg.pretrain_freeze_steps} (soft_prompt only)、"
+               f"warmup_steps={cfg.pretrain_warmup_steps} (post-freeze linear)、以降 base 維持")
+        original_lr = cfg.learning_rate
+    else:
+        # Stage 1-2: 従来 flat LR + manual warmup
+        optimizer = AdamW(trainable_params, lr=cfg.learning_rate, weight_decay=cfg.weight_decay)
+        original_lr = optimizer.param_groups[0]["lr"]
+        scheduler = MultiStepLR(optimizer, milestones=[cfg.num_steps_before_decay], gamma=0.1)
+        rprint(f"\nOptimizer: AdamW(lr={original_lr}, wd={cfg.weight_decay})")
+        rprint(f"Scheduler: MultiStepLR(milestones=[{cfg.num_steps_before_decay}], gamma=0.1)")
+        rprint(f"Warmup: 10% → 100% linear over {cfg.lr_warmup_steps} steps (原 finetune.py:1060-1065 準拠)")
+
+    # --- 5/13 hard deadline parser (Stage 3 R19、pretrain mode のみ active) ---
+    hard_stop_deadline = None
+    if cfg.pretrain_mode and cfg.hard_stop_datetime:
+        from datetime import datetime
+        try:
+            hard_stop_deadline = datetime.strptime(cfg.hard_stop_datetime, "%Y-%m-%d %H:%M:%S")
+            rprint(f"  hard_stop_datetime: {cfg.hard_stop_datetime} (R19)")
+        except ValueError as e:
+            rprint(f"  [WARN] hard_stop_datetime parse 失敗: {e}、deadline check disabled")
 
     # --- Main train loop ---
     # Escalation #9 (Plan v2 update 2026-04-20):
@@ -553,13 +723,30 @@ def finetune(cfg: FinetuneConfig) -> None:
             and step == cfg.smoke_save_step
         )
 
+        # --- Hard stop check (Stage 3 R19、pretrain_mode) ---
+        if hard_stop_deadline is not None:
+            from datetime import datetime
+            if datetime.now() >= hard_stop_deadline:
+                rprint(f"[finetune_gemma4] Hard stop datetime reached: {cfg.hard_stop_datetime} (R19)")
+                rprint(f"  stopping at step {step}/{cfg.max_steps}")
+                break
+
         # batch load
         batch = next(data_iter)
         pv, input_ids, proprio, actions, languages = move_batch_to_device(batch, device)
         B, L = input_ids.shape
 
+        # Stage 3: dataset_id を forward に渡す (pretrain mode、SoftPromptLibrary 入力)
+        if cfg.pretrain_mode:
+            dataset_id = batch["dataset_id"].to(device)   # (B,) long
+        else:
+            dataset_id = None
+
         # --- Forward ---
-        predicted, loss = model_vla(pv, input_ids, proprio, actions)
+        if cfg.pretrain_mode:
+            predicted, loss = model_vla(pv, input_ids, proprio, actions, dataset_id=dataset_id)
+        else:
+            predicted, loss = model_vla(pv, input_ids, proprio, actions)
         assert predicted.shape == (B, cfg.num_action_chunks, cfg.action_dim)
         assert loss.dim() == 0
         if not torch.isfinite(loss).item():
@@ -597,10 +784,16 @@ def finetune(cfg: FinetuneConfig) -> None:
                 )
                 assert llm_leak == 0 and vb_leak == 0, f"step {step}: leak (LLM {llm_leak}, VB {vb_leak})"
 
-        # --- Warmup lr update (原 finetune.py:1060-1065) ---
-        current_lr = compute_warmup_lr(gradient_step_idx, original_lr, cfg.lr_warmup_steps)
-        for param_group in optimizer.param_groups:
-            param_group["lr"] = current_lr
+        # --- LR update ---
+        if cfg.pretrain_mode:
+            # Stage 3: X-VLA 流 two-step (freeze + warmup)、per-group LR
+            lr_map = update_pretrain_lrs(optimizer, step, cfg)
+            current_lr = lr_map.get("soft_prompt_library", 0.0)   # log 用に代表値 (soft_prompt)
+        else:
+            # Stage 1-2: flat LR with manual warmup (原 finetune.py:1060-1065)
+            current_lr = compute_warmup_lr(gradient_step_idx, original_lr, cfg.lr_warmup_steps)
+            for param_group in optimizer.param_groups:
+                param_group["lr"] = current_lr
 
         # --- Clip ---
         grad_norm_pre = torch.nn.utils.clip_grad_norm_(
@@ -616,7 +809,8 @@ def finetune(cfg: FinetuneConfig) -> None:
         # --- Optimizer / Scheduler step (原 finetune.py:1078-1081) ---
         if (step + 1) % cfg.grad_accumulation_steps == 0:
             optimizer.step()
-            scheduler.step()
+            if scheduler is not None:
+                scheduler.step()   # pretrain_mode は None (update_pretrain_lrs で制御済)
 
         step_sec = time.time() - t_step
         step_times_all.append(step_sec)
