@@ -1794,6 +1794,27 @@ Phase 2e 進行中に User 要請で複数 checkpoint を GPU 1 で rollout、�
 - Phase 2e per-step time への影響: 各 rollout で +10-15% 一時的 (Phase 2f 3 回とも終了後 1.01s に recovery)
 - Escalation #23 warning 1.16 s/step には未到達、Phase 2e 健全に進行
 
+### Phase 2f 追加 rollout #1 (60k checkpoint、2026-04-20 22:55)
+
+Phase 2e step 69k 時点 (60k save 保存済、次 save 70k で overwrite 前) に実施、全 10 task × 1 episode、GPU 5:
+
+- **60k 成功率: 8/10 (80%)** — 40k 6/10 variance から recovery
+- 成功 task: 0, 2, 3, 4, 6, 7, 8, 9 (8 task)
+- 未解: task 1 (bowl next to ramekin)、task 5 (bowl on ramekin) — "ramekin" 近接 object の disambiguation が hard case
+
+Convergence curve updated:
+
+| Step | Success | 観察 |
+|---|---|---|
+| 0 (random) | 0/10 | Phase 2c baseline |
+| 20k | 5/10 (50%) | 10% trained |
+| 30k | 8/10 (80%) | 上振れ |
+| 40k | 6/10 (60%) | 下振れ (single-trial variance) |
+| **60k** | **8/10 (80%)** | **stabilizing 80-90% 帯、task 1/5 未解** |
+
+Consistent success (3 連続以上 True): task 0, 2, 3, 4, 6, 7, 8, 9 (8 task)
+残 2 task は "ramekin" 近接 object の spatial reasoning、さらなる trained weight で解決期待。
+
 
 ## 2026-04-20 夜: Scope 変更記録 (Stage 2 後半へ)
 
