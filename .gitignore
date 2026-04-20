@@ -6,8 +6,42 @@ checkpoint_step_*.pt
 # wandb
 wandb/
 
-# External reference clones
-VLA-Adapter/
+# External reference clones (upstream reference、全 ignore)
+LIBERO/
+X-VLA/
+
+# VLA-Adapter は upstream reference だが、*gemma4* 追加 file 3 つだけ selective track。
+# 各 level で `dir/*` (= dir 内全 file ignore) + `!subdir/` / `!file.py` で un-ignore の階層構造。
+# 親 dir を完全 ignore してしまうと子 file の un-ignore が効かないため、`*` で contents のみ ignore。
+VLA-Adapter/*
+!VLA-Adapter/prismatic/
+!VLA-Adapter/vla-scripts/
+VLA-Adapter/prismatic/*
+!VLA-Adapter/prismatic/extern/
+!VLA-Adapter/prismatic/vla/
+VLA-Adapter/prismatic/extern/*
+!VLA-Adapter/prismatic/extern/hf/
+VLA-Adapter/prismatic/extern/hf/*
+!VLA-Adapter/prismatic/extern/hf/modeling_prismatic_gemma4.py
+VLA-Adapter/prismatic/vla/*
+!VLA-Adapter/prismatic/vla/constants_gemma4.py
+VLA-Adapter/vla-scripts/*
+!VLA-Adapter/vla-scripts/finetune_gemma4.py
+
+# Local artifacts (大容量、track しない)
+/runs/
+/data/
+!data/  # data dir 自体は keep (LIBERO data 置き場を explicit 表示)
+data/modified_libero_rlds/
+data/libero/
+data/stage3_openx/
+.claude/
+scripts/gemma4/__pycache__/
+scripts/gemma4/*.log
+scripts/gemma4/*_stdout.log
+scripts/stage3/__pycache__/
+tea_debug.log
+/tmp/
 
 # Python
 __pycache__/
