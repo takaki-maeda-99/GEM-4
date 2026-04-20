@@ -154,6 +154,7 @@ class FinetuneConfig:
     # pretrain_mode=True で multi-dataset pretrain、SoftPromptLibrary 有効化 + dataset_id 付与 + custom LR
     # false の場合 Stage 1-2 動作完全互換 (backward compat)
     pretrain_mode: bool = False
+    pretrain_num_workers: int = 4             # Phase 3b-5 data pipeline 最適化、DDP throughput 改善
     num_pretrain_datasets: int = 0            # 0=disabled、2=Taco+Fractal、3=+自前等
     num_soft_prompt_tokens: int = 32          # X-VLA 原実装 len_soft_prompts=32 と一致
     # Custom LR: X-VLA の learning_coef (vision_projector + soft_prompt に backbone LR × coef)
@@ -279,7 +280,14 @@ def build_dataloader(cfg: FinetuneConfig, tok, vision_backbone) -> DataLoader:
 
 
 def build_pretrain_dataloader(cfg: FinetuneConfig, tok, vision_backbone) -> DataLoader:
-    """Stage 3 pretrain: MultiDatasetPretrainDataset (Taco + Fractal) を DataLoader に包む."""
+    """Stage 3 pretrain: MultiDatasetPretrainDataset (Taco + Fractal) を DataLoader に包む.
+
+    Phase 3b-5 (2026-04-20 夜、Data pipeline 最適化、DDP throughput 問題対応):
+      num_workers=4 で CPU 並列 data prep (image_transform + tokenize) を worker process 化、
+      main process の GPU forward/backward と overlap して DDP scaling を改善。
+      persistent_workers=True で worker 再 fork コスト排除、prefetch_factor=2 で
+      batch buffer 保持。TF datasets は worker process 内で lazy init (fork 後安全)。
+    """
     sys.path.insert(0, str(REPO_ROOT / "scripts" / "stage3"))
     from multi_dataset_loader import MultiDatasetPretrainDataset, collate_pretrain
     dataset = MultiDatasetPretrainDataset(
@@ -287,12 +295,16 @@ def build_pretrain_dataloader(cfg: FinetuneConfig, tok, vision_backbone) -> Data
         image_transform=vision_backbone.image_transform,
         num_actions_chunk=cfg.num_action_chunks,
     )
+    # num_workers は cfg から override 可能、default 4 (Phase 3b-5 smoke 実測で決定)
+    num_workers = getattr(cfg, "pretrain_num_workers", 4)
     return DataLoader(
         dataset,
         batch_size=cfg.batch_size,
         sampler=None,
         collate_fn=collate_pretrain,
-        num_workers=0,
+        num_workers=num_workers,
+        persistent_workers=(num_workers > 0),
+        prefetch_factor=2 if num_workers > 0 else None,
     )
 
 

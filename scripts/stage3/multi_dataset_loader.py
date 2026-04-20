@@ -146,7 +146,12 @@ def normalize_action_bounds_q99(action: np.ndarray, stats: dict) -> np.ndarray:
 # Dataset wrappers (per-dataset iter + canonical 変換)
 # ===========================================================
 class PerDatasetIterable:
-    """1 dataset の episode/step を iter、canonical batch dict を yield."""
+    """1 dataset の episode/step を iter、canonical batch dict を yield.
+
+    Phase 3b-5 (2026-04-20 夜、DataLoader num_workers 対応):
+      - tfds.load は __iter__ 初回呼出時 lazy 化 (worker fork 後の TF init を確実化)
+      - fork 前に TF global state を main process で握らない
+    """
     def __init__(self, dataset_name: str, stats: dict, action_extractor, image_extractor,
                  num_actions_chunk: int = NUM_ACTIONS_CHUNK):
         self.dataset_name = dataset_name
@@ -155,10 +160,13 @@ class PerDatasetIterable:
         self.action_extractor = action_extractor
         self.image_extractor = image_extractor
         self.num_actions_chunk = num_actions_chunk
-        self._tfds = tfds.load(dataset_name, data_dir=str(DATA_ROOT), split="train")
+        self._tfds = None   # lazy load in iter_chunks、worker process 内で初期化
 
     def iter_chunks(self) -> Iterator[dict]:
         """Yield per-timestep chunk dict: {primary_img, wrist_img, action_chunk 8x7 normalized, language, dataset_id}."""
+        # Lazy load: worker process 内で初回 call 時に TF dataset を作る (fork 後に安全)
+        if self._tfds is None:
+            self._tfds = tfds.load(self.dataset_name, data_dir=str(DATA_ROOT), split="train")
         for ep in self._tfds:
             # buffer の episode 内全 step、NUM_ACTIONS_CHUNK 先まで取れる step のみ yield
             steps_buf = list(ep["steps"])
@@ -272,10 +280,25 @@ class MultiDatasetPretrainDataset(IterableDataset):
         }
 
     def __iter__(self) -> Iterator[dict]:
+        # Phase 3b-5 (DataLoader num_workers 対応):
+        # - __iter__ 内で PerDatasetIterable を生成 (worker process 内で fork 後初期化)
+        # - worker_info.id + seed で rank 毎に data sampling を分散
+        # - TF は worker process の lazy load (PerDatasetIterable.iter_chunks 内) で安全 fork
+        from torch.utils.data import get_worker_info
+        worker_info = get_worker_info()
+        if worker_info is not None:
+            # Multi-worker: 各 worker は diff seed で diff sampling
+            effective_seed = self.seed + worker_info.id * 1000 + 1
+        else:
+            effective_seed = self.seed
+        worker_rng = random.Random(effective_seed)
+
         # 各 dataset の iter を keep、weighted sampling で次 dataset を選択、該 iter から 1 chunk 取る
+        # 注: self.datasets は main process で作られた state を共有するが、tfds.load は
+        #     PerDatasetIterable.iter_chunks 内の lazy load 内で worker ごとに再 init される
         ds_iters = {n: iter(self.datasets[n].iter_chunks()) for n in self.ds_names}
         while True:
-            chosen = self.rng.choices(self.ds_names, weights=self.ds_weights, k=1)[0]
+            chosen = worker_rng.choices(self.ds_names, weights=self.ds_weights, k=1)[0]
             try:
                 ck = next(ds_iters[chosen])
             except StopIteration:
