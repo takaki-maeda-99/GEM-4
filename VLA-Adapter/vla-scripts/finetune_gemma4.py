@@ -337,11 +337,24 @@ def build_pretrain_optimizer(model_vla, cfg: FinetuneConfig, inner_model) -> Ada
 
 
 def update_pretrain_lrs(optimizer: AdamW, step: int, cfg: FinetuneConfig) -> dict:
-    """X-VLA 流 two-step adaptation LR スケジュール.
+    """X-VLA 流 two-step adaptation LR スケジュール (X-VLA/train.py:164-172 準拠).
 
-      step < freeze_steps: soft_prompt_library のみ train (他 LR=0、action_head/etc は frozen)
-      freeze_steps <= step < freeze_steps + warmup_steps: linear warmup 0 → base_lr (per group base)
-      freeze_steps + warmup_steps <= step: base_lr 維持
+    X-VLA mapping → Gemma 4 mapping:
+      X-VLA `vlm` / `transformer_core` (freeze 中 LR=0)  ≈  本実装 `vision_projector`
+      X-VLA `soft_prompts` (coef 適用、常時 active)       ≈  本実装 `soft_prompt_library`
+      X-VLA `action_heads` (常時 active、coef 非適用)      ≈  本実装 `action_head` + `proprio_projector` + `action_queries`
+
+    Phase 1 (step < freeze_steps): prompt warmup phase
+      vision_projector: 0 (frozen、X-VLA vlm/transformer_core 相当)
+      soft_prompt_library: base × coef (active with coef)
+      action_head / proprio_projector / action_queries: base (active)
+
+    Phase 2 (freeze_steps ≤ step < freeze_steps + warmup_steps): post-freeze vision warmup
+      vision_projector: 0 → base × coef linear warmup
+      soft_prompt_library / action_head / proprio / action_queries: base maintaining (no discontinuity)
+
+    Phase 3 (step ≥ freeze_steps + warmup_steps): joint full-train
+      全 group: base (cosine decay は Plan §3c-2 errata で非採用、hard_stop_datetime で停止)
 
     戻り値: {group_name: current_lr} (log 用)
     """
@@ -350,24 +363,30 @@ def update_pretrain_lrs(optimizer: AdamW, step: int, cfg: FinetuneConfig) -> dic
     freeze = cfg.pretrain_freeze_steps
     warmup = cfg.pretrain_warmup_steps
     base_map = {
-        "vision_projector":    base_lr * coef,
-        "soft_prompt_library": base_lr * coef,
-        "action_head":         base_lr,
-        "proprio_projector":   base_lr,
-        "action_queries":      base_lr,
+        "vision_projector":    base_lr * coef,   # X-VLA vlm 相当 (coef 適用)
+        "soft_prompt_library": base_lr * coef,   # X-VLA soft_prompts (coef 適用)
+        "action_head":         base_lr,          # X-VLA action_heads (coef 非適用)
+        "proprio_projector":   base_lr,          # 同上
+        "action_queries":      base_lr,          # 同上
     }
+    # freeze 中 LR=0 にする group (X-VLA vlm/transformer_core 相当)
+    VISION_ONLY_FROZEN = {"vision_projector"}
     current = {}
     for g in optimizer.param_groups:
         name = g["name"]
         target = base_map[name]
         if step < freeze:
-            # prompt warmup only: soft_prompt_library のみ target LR 維持、他 0
-            new_lr = target if name == "soft_prompt_library" else 0.0
+            # Phase 1: vision_projector のみ freeze、他は active (X-VLA 準拠)
+            new_lr = 0.0 if name in VISION_ONLY_FROZEN else target
         elif step < freeze + warmup:
-            # post-freeze linear warmup
-            progress = (step - freeze) / max(1, warmup)
-            new_lr = target * progress
+            # Phase 2: vision_projector のみ linear warmup、他は base 維持
+            if name in VISION_ONLY_FROZEN:
+                progress = (step - freeze) / max(1, warmup)
+                new_lr = target * progress
+            else:
+                new_lr = target
         else:
+            # Phase 3: 全 group base
             new_lr = target
         g["lr"] = new_lr
         current[name] = new_lr
@@ -669,11 +688,18 @@ def finetune(cfg: FinetuneConfig) -> None:
         scheduler = None   # pretrain は update_pretrain_lrs で per-step LR 制御、MultiStepLR 不使用
         rprint(f"\nOptimizer: AdamW pretrain mode")
         rprint(f"  betas=(0.9, {cfg.pretrain_betas_beta2})、wd={cfg.pretrain_weight_decay}")
-        rprint("  param groups:")
+        rprint("  param groups (name, init lr, num_params, requires_grad=True):")
+        total_trainable_M = 0.0
         for g in optimizer.param_groups:
-            rprint(f"    {g['name']}: lr={g['lr']:.2e}")
-        rprint(f"  LR schedule: freeze_steps={cfg.pretrain_freeze_steps} (soft_prompt only)、"
-               f"warmup_steps={cfg.pretrain_warmup_steps} (post-freeze linear)、以降 base 維持")
+            n_params = sum(p.numel() for p in g["params"])
+            total_trainable_M += n_params / 1e6
+            rprint(f"    {g['name']:<22s}: lr={g['lr']:.3e}  num_params={n_params/1e6:7.3f}M  wd={g.get('weight_decay', 0.0)}")
+        rprint(f"  Total trainable (optimizer scope): {total_trainable_M:.3f}M "
+               f"(Stage 2 baseline 675.138M + soft_prompt {cfg.num_pretrain_datasets*cfg.num_soft_prompt_tokens*1536/1e6:.3f}M)")
+        rprint(f"  LR schedule X-VLA 準拠 (X-VLA/train.py:164-172):")
+        rprint(f"    Phase 1 (step <{cfg.pretrain_freeze_steps}): vision_projector LR=0、他 base")
+        rprint(f"    Phase 2 ({cfg.pretrain_freeze_steps}-{cfg.pretrain_freeze_steps+cfg.pretrain_warmup_steps}): vision_projector 0→base×coef linear warmup")
+        rprint(f"    Phase 3 (≥{cfg.pretrain_freeze_steps+cfg.pretrain_warmup_steps}): 全 group base、cosine decay 非採用")
         original_lr = cfg.learning_rate
     else:
         # Stage 1-2: 従来 flat LR + manual warmup
@@ -753,8 +779,25 @@ def finetune(cfg: FinetuneConfig) -> None:
             raise RuntimeError(f"Loss non-finite at step {step}: {loss.item()}")
         loss_val = float(loss.item())
 
+        # --- Per-dataset loss breakdown (C5、smoke + pretrain_mode) ---
+        per_dataset_loss = {}
+        if cfg.pretrain_mode and cfg.smoke_mode and is_main_process:
+            with torch.no_grad():
+                sample_loss = (predicted - actions).abs().mean(dim=[1, 2])   # (B,) per-sample L1
+                for ds_name, d_id in (("taco_play", 0), ("fractal20220817_data", 1)):
+                    mask = (dataset_id == d_id)
+                    if mask.any():
+                        per_dataset_loss[ds_name] = float(sample_loss[mask].mean().item())
+
         # --- Backward ---
         loss.backward()
+
+        # --- Soft prompt grad norm (C1、smoke + pretrain_mode で log、freeze 中 non-zero 確認) ---
+        soft_prompt_grad_norm = -1.0
+        if cfg.pretrain_mode and cfg.smoke_mode and is_main_process:
+            sp_weight = inner_model.soft_prompt_library.embedding.weight
+            if sp_weight.grad is not None:
+                soft_prompt_grad_norm = sp_weight.grad.detach().float().norm().item()
 
         # Grad leak check (毎 step、smoke 100 step なら overhead ~数 ms 許容)
         # R4 DDP 互換: DDP wrap 時は inner_model (= model_vla.module) 経由で llm/vision_backbone に access
@@ -789,6 +832,16 @@ def finetune(cfg: FinetuneConfig) -> None:
             # Stage 3: X-VLA 流 two-step (freeze + warmup)、per-group LR
             lr_map = update_pretrain_lrs(optimizer, step, cfg)
             current_lr = lr_map.get("soft_prompt_library", 0.0)   # log 用に代表値 (soft_prompt)
+            # C6: smoke mode で step 0/50/99 に LR state dump (train loop 内判定で全 group 状態可視化)
+            if cfg.smoke_mode and is_main_process and step in (0, cfg.smoke_save_step, cfg.max_steps - 1):
+                phase_desc = (
+                    "freeze phase (step<freeze)" if step < cfg.pretrain_freeze_steps
+                    else ("warmup phase (freeze≤step<freeze+warmup)" if step < cfg.pretrain_freeze_steps + cfg.pretrain_warmup_steps
+                          else "joint full-train phase (≥freeze+warmup)")
+                )
+                print(f"  [step {step+1}] LR state ({phase_desc}):")
+                for name, lr in lr_map.items():
+                    print(f"    {name:<22s}: lr={lr:.3e}")
         else:
             # Stage 1-2: flat LR with manual warmup (原 finetune.py:1060-1065)
             current_lr = compute_warmup_lr(gradient_step_idx, original_lr, cfg.lr_warmup_steps)
@@ -849,9 +902,17 @@ def finetune(cfg: FinetuneConfig) -> None:
 
         # --- Log (rank 0 のみ) ---
         if is_main_process and (cfg.smoke_mode or step % cfg.wandb_log_freq == 0):
+            # Pretrain mode では per-dataset loss + soft_prompt_grad_norm を append
+            extra = ""
+            if cfg.pretrain_mode and cfg.smoke_mode:
+                if per_dataset_loss:
+                    pdl = "  ".join(f"{k[:4]}={v:.4f}" for k, v in per_dataset_loss.items())
+                    extra += f"  per-ds: {pdl}"
+                if soft_prompt_grad_norm >= 0:
+                    extra += f"  sp_gn={soft_prompt_grad_norm:.3f}"
             print(f"  [step {step+1:4d}/{cfg.max_steps}] lr={current_lr:.3e}  loss={loss_val:.4f}  "
                   f"gn_pre={grad_norm_pre:.2f}  gn_post={grad_norm_post:.4f}  "
-                  f"({step_sec:.2f}s)")
+                  f"({step_sec:.2f}s){extra}")
         if use_wandb and step % cfg.wandb_log_freq == 0:
             wandb.log({
                 "train/loss": loss_val,
