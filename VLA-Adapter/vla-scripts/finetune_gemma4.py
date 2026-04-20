@@ -143,6 +143,11 @@ class FinetuneConfig:
     # 各 rank は LOCAL_RANK env var から GPU 選択、init_process_group で NCCL 接続
     ddp_mode: bool = False
     ddp_backend: str = "nccl"
+    ddp_bucket_cap_mb: int = 25                # Phase 3c-0 T3、PyTorch default 25 → 拡大で 5-10% 通信 overhead 減
+
+    # --- Phase 3c-0 optimization knobs (low-risk algorithmic optimizations) ---
+    optim_fused: bool = False                  # T1: AdamW(fused=True)、期待 5-15% forward+backward overhead 削減
+    attn_implementation: str = "sdpa"          # T5: "sdpa" or "flash_attention_2"、FA-2 は Gemma 4 互換性要検証
 
     # --- Smoke mode (Phase 2b) ---
     smoke_mode: bool = False                  # True: max_steps=100, save@50, resume check on
@@ -227,7 +232,7 @@ def build_model(cfg: FinetuneConfig, device: torch.device) -> tuple[VLAAdapterGe
         tok.pad_token = tok.eos_token
 
     gemma = AutoModelForCausalLM.from_pretrained(
-        cfg.gemma_model_id, dtype=torch.bfloat16, attn_implementation="sdpa",
+        cfg.gemma_model_id, dtype=torch.bfloat16, attn_implementation=cfg.attn_implementation,
     ).to(device).eval()
     gemma.config.use_cache = True                       # R6: use_cache=True 必須
     # gemma.gradient_checkpointing_enable()             # R6: GC 永久禁止 (HF #45242)
@@ -344,7 +349,8 @@ def build_pretrain_optimizer(model_vla, cfg: FinetuneConfig, inner_model) -> Ada
         {"name": "proprio_projector",   "params": pproj, "lr": base_lr,        "weight_decay": wd},
         {"name": "action_queries",      "params": aq,    "lr": base_lr,        "weight_decay": wd},
     ]
-    opt = AdamW(param_groups, betas=betas)
+    # Phase 3c-0 T1: fused=True で forward/backward kernel overhead 削減 (CUDA graph 互換 kernel)
+    opt = AdamW(param_groups, betas=betas, fused=cfg.optim_fused)
     return opt
 
 
@@ -683,7 +689,8 @@ def finetune(cfg: FinetuneConfig) -> None:
         #   True 指定で DDP が per-iteration で使用 param を検出、reduction を調整。overhead 5-10% の代償で
         #   architecture 互換性確保。Phase 2i C1 本番 DDP retrain でも同設定。
         model_vla = DDP(model_vla, device_ids=[local_rank], output_device=local_rank,
-                        find_unused_parameters=True)
+                        find_unused_parameters=True,
+                        bucket_cap_mb=cfg.ddp_bucket_cap_mb)   # T3: default 25 → 100 で all-reduce overhead 削減
         # NCCL all-reduce scope (trainable のみ、frozen LLM/VB は excluded by DDP spec when requires_grad=False)
         all_reduce_params = sum(p.numel() for p in model_vla.parameters() if p.requires_grad)
         rprint(f"[ddp] all-reduce scope (trainable only): {all_reduce_params/1e6:.3f}M params "
@@ -716,7 +723,8 @@ def finetune(cfg: FinetuneConfig) -> None:
         original_lr = cfg.learning_rate
     else:
         # Stage 1-2: 従来 flat LR + manual warmup
-        optimizer = AdamW(trainable_params, lr=cfg.learning_rate, weight_decay=cfg.weight_decay)
+        optimizer = AdamW(trainable_params, lr=cfg.learning_rate, weight_decay=cfg.weight_decay,
+                          fused=cfg.optim_fused)
         original_lr = optimizer.param_groups[0]["lr"]
         scheduler = MultiStepLR(optimizer, milestones=[cfg.num_steps_before_decay], gamma=0.1)
         rprint(f"\nOptimizer: AdamW(lr={original_lr}, wd={cfg.weight_decay})")

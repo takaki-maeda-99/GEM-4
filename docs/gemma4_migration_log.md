@@ -2040,3 +2040,62 @@ Stage 2 AdamW default betas 確認: 我々の Stage 2 finetune_gemma4.py は `Ad
 ### Phase 3a-4 / 3b-4 smoke は GPU 確保後に実施
 - GPU 2 or 6 or 7 で 1 batch verify + 100 step smoke (~30-60 min)
 - Phase 2e 進行中 GPU 0 非干渉、GPU 2-7 利用可能帯
+
+## Phase 3c-0 検証結果 (2026-04-20 夜、Check-in #27.75)
+
+Phase 3b-4 DDP 4-GPU で throughput scaling 1.05x のみ発覚 → Phase 3c-0 で原因切り分けと最適化検討。
+
+### 原因切り分け (Test A/B + 2-GPU)
+- Test A (2-GPU DDP + pretrain_mode=False、LIBERO): **0.601 s/step**
+- Test B (2-GPU DDP + pretrain_mode=True、soft_prompt): **0.619 s/step**
+- Test B / Test A = 1.03x → pretrain mode 固有 overhead +3% のみ
+- → 結論: **4-GPU NCCL all-reduce on PCIe (NVLink 非接続) の cross-socket 問題**、pretrain mode 無関係
+- 採用決定: **2-GPU DDP (GPU 2-3)** で Phase 3c-1 kick-off
+
+### Phase 3c-0 optimization test matrix (Tier H1 + T5 FA-2 + T7 B=6)
+
+| Test | Config | Per-step | samples/sec | vs baseline | 判定 |
+|---|---|---|---|---|---|
+| T0 | baseline (B=4、sdpa、AdamW、bucket 25MB) | 0.619 s | 12.92 | — | reference |
+| T1 | + Fused AdamW (`fused=True`) | 0.614 s | 13.03 | +0.8% (noise) | 不採用 (<5%) |
+| T2 | + NCCL_ALGO=Tree | FAIL | — | NCCL 2.28 AllGather 非対応 | 棄却 |
+| T3 | + ddp_bucket_cap_mb=100 | 0.652 s | 12.27 | **-5.3% regression** | 棄却 |
+| T4 | Tier H1 combined (Fused + BUFFSIZE + bucket 100) | 0.614 s | 13.03 | +0.8% (T1 と同) | 不採用 |
+| T5 | + attn_implementation="flash_attention_2" | FAIL | — | `flash-attn` package 未 install (install+compat +30-60 min、gain 不透明) | skip |
+| **T7** | **+ B=6 per-GPU (eff 12)** | **0.786 s** | **15.27** | **+18.2% throughput** | 採用閾値 +20% 僅差下回り |
+
+### 最終判断 (User 2026-04-20 夜)
+**(B) Continue**: 現 Phase 3c-1 config (B=4 effective 8) を継続、1M step 上限 or `hard_stop_datetime=2026-05-13 00:00` で停止、途中 stop 禁止。
+
+理由 (User 明示):
+- T7 B=6 の +18% gain は Buffer 14+ 日に対して限定的、effective batch 8 → 12 の pretrain 収束挙動変化 (X-VLA 想定 hyperparam との相性) リスクの方が大
+- Tier H1 (T1/T3/T4) 軒並み有意な改善なし = tuning margin 小の環境、大胆な変更の相対リスク大
+- Stage 3 scope "1 run のみ、ablation 禁止" と整合、restart コスト (5000+ step discard ~50 min) の価値なし
+
+### 新 entries (User 2026-04-20 夜判断)
+
+**Tier A (Stage 2 後半) を Stage 3 scope から除外 (Hackathon 後送り)**:
+- A1 (Qwen 0.5B baseline 比較): User main target (Mission 2/3) への直接寄与薄、比較検証は後回し方針
+- A2 (component latency breakdown): 同上
+- A3 (torch.compile): Stage 4 本格最適化で対応
+- Stage 2 latter_half Plan §3 Tier A 該当箇所は **dormant** 扱い
+- 解放 GPU (GPU 6/7): Phase 2f 追加 rollout 用途に転用
+
+**Phase 2f 追加 rollout schedule 採用 (Phase 2e convergence tracking)**:
+- Trigger: Phase 2e 途中 checkpoint 到達時 (60k / 80k / 100k / 150k)
+- Execution: GPU 5 or 6 で `eval_libero_gemma4.py` 全 10 task × 1 episode rollout、各 ~5 分
+- 非干渉確認: Phase 2e (GPU 0) / Phase 3c-1 (GPU 2-3) / moriki (GPU 1) と完全独立
+- Results: migration_log Phase 2f section に convergence curve 追記
+  - 20k: 5/10、30k: 8/10、40k: 6/10 (variance)、60k: TBD、80k: TBD、100k: TBD、150k: TBD、200k: Phase 2g full eval
+- 目的: Submission narrative の data point 強化、paper gap 分析の convergence trajectory 明示
+
+### Phase 3c-1 (2-GPU DDP pretrain) kick-off 記録 (2026-04-20 ~22:10)
+
+- Command: `torchrun --nproc_per_node=2 --master_port=29506 finetune_gemma4.py --ddp_mode True --pretrain_mode True --num_pretrain_datasets 2 --num_soft_prompt_tokens 32 --batch_size 4 --pretrain_num_workers 4 --max_steps 1000000 --hard_stop_datetime "2026-05-13 00:00:00" --run_id_note pretrain_baseline-20260420`
+- GPU: 2-3 (40GB × 2)
+- WandB run_id: `gemma-4-e2b+pretrain-nd2-sp32+b4+lr-0.0002+coef-0.25+fr-1000-wu-2000+pretrain_baseline-20260420`
+- Per-step: 0.62 s/step (Test B 再現)
+- ETA: 500k step 3.6 日、1M step 7.2 日、5/13 hard_stop まで ~22 日 buffer 14+ 日
+- 初期観測 (step ~1000): loss 0.14-0.22 range、freeze phase 収束、sp_gn 非ゼロ active
+
+Phase 2e (GPU 0) / Phase 3c-1 (GPU 2-3) / moriki (GPU 1) 3 job 並列、GPU 4-7 idle (Phase 2f rollout の際に活用)。
