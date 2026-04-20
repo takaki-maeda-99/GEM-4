@@ -414,7 +414,7 @@ def save_checkpoint(
     checkpoint_path: Path,
     model_vla: VLAAdapterGemma4,
     optimizer: AdamW,
-    scheduler: MultiStepLR,
+    scheduler: Optional[MultiStepLR],    # pretrain_mode は None (update_pretrain_lrs で per-step 制御)
     gradient_step_idx: int,
     current_lr: float,
     cfg: FinetuneConfig,
@@ -424,7 +424,7 @@ def save_checkpoint(
     保存内容:
       - model_state_dict: llm + vision_backbone 除く全モジュール (trainable のみ)
       - optimizer_state_dict
-      - scheduler_state_dict
+      - scheduler_state_dict: MultiStepLR state (Stage 1-2)、pretrain_mode は None
       - gradient_step_idx (warmup continuity、resume 時の lr 再計算 source)
       - current_lr (sanity check 用)
       - cfg (dict 化、resume 時の config drift 検出)
@@ -437,7 +437,7 @@ def save_checkpoint(
     payload = {
         "trainable_state_dict": trainable_state,
         "optimizer_state_dict": optimizer.state_dict(),
-        "scheduler_state_dict": scheduler.state_dict(),
+        "scheduler_state_dict": scheduler.state_dict() if scheduler is not None else None,
         "gradient_step_idx": gradient_step_idx,
         "current_lr": current_lr,
         "cfg": {k: str(v) if isinstance(v, Path) else v for k, v in cfg.__dict__.items()},
@@ -450,7 +450,7 @@ def load_checkpoint_into(
     checkpoint_path: Path,
     model_vla: VLAAdapterGemma4,
     optimizer: AdamW,
-    scheduler: MultiStepLR,
+    scheduler: Optional[MultiStepLR],    # pretrain_mode は None
     map_location: str = "cuda:0",
 ) -> dict:
     payload = torch.load(checkpoint_path, map_location=map_location, weights_only=False)
@@ -460,7 +460,8 @@ def load_checkpoint_into(
     assert not relevant_missing, f"unexpected missing keys: {relevant_missing[:5]}..."
     assert not unexpected, f"unexpected keys in checkpoint: {unexpected[:5]}..."
     optimizer.load_state_dict(payload["optimizer_state_dict"])
-    scheduler.load_state_dict(payload["scheduler_state_dict"])
+    if scheduler is not None and payload.get("scheduler_state_dict") is not None:
+        scheduler.load_state_dict(payload["scheduler_state_dict"])
     return {
         "gradient_step_idx": payload["gradient_step_idx"],
         "current_lr": payload["current_lr"],
