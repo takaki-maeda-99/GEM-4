@@ -6,9 +6,32 @@
 
 **Architecture:** Scene image goes through Gemma 4 native vision encoder (frozen) + Gemma 4 LM (frozen params) to produce multi-layer Bridge hidden states. Wrist image goes through a trainable ResNet18 directly to the action head. Soft prompts (dataset conditioning) are concatenated into the action latent sequence instead of being prepended to the LLM input. A `training_mode` YAML flag selects **Mode A** (`action_queries` trainable + LLM backward + GC + LoRA r=16) vs **Mode B** (`action_queries` frozen + LLM forward under `torch.no_grad()`).
 
-**Tech Stack:** PyTorch 2.11, Transformers 5.5.4, Flash Attention 2, torchvision ResNet18, peft (LoRA, Mode A only), RLDS / tfds (Taco Play), DDP via `torchrun`, `.venv-gemma4/bin/python`.
+**Tech Stack:** PyTorch 2.11, Transformers 5.5.4, **SDPA (torch native, Flash backend 組込)**, torchvision ResNet18, peft (LoRA, Mode A only), RLDS / tfds (Taco Play), DDP via `torchrun`, `.venv-gemma4/bin/python`.
 
-**Spec:** [docs/superpowers/specs/2026-04-22-vla-redesign-scene-wrist-split-design.md](../specs/2026-04-22-vla-redesign-scene-wrist-split-design.md)
+**Spec:** [docs/superpowers/specs/2026-04-22-vla-redesign-scene-wrist-split-design.md](../specs/2026-04-22-vla-redesign-scene-wrist-split-design.md) (rev 3: Gemma 4 vision API 実測反映)
+
+---
+
+## Progress (2026-04-22)
+
+| Task | Status | Commit |
+|---|---|---|
+| Task 1: WristResNet18 encoder | ✅ completed | 7d8dc5d |
+| Task 2: Remove film_gen dead code | ✅ completed | 0235b0f |
+| Task 3: `MLPResNet.forward` concat | ✅ completed | 835219a |
+| Task 4: `predict_action` signature | ✅ completed | 373b2fe |
+| Task 5: `Gemma4ForConditionalGeneration` 切替 (+ sdpa) | ✅ completed | b9b19d3 |
+| Task 6: Gemma 4 native vision integration (rev 3 再設計) | ⬜ pending | — |
+| Task 7-17 | ⬜ pending | — |
+
+**Rev 3 重要訂正 (Task 6 以降に影響):**
+- `multi_modal_projector` は存在せず、`embed_vision` (`Gemma4MultimodalEmbedder`) が projector 役
+- Vision 入力は **patchified `(B, max_patches, 768)` + `pixel_position_ids (B, max_patches, 2)`**、raw 画像ではない
+- Vision 出力は **padding-stripped flat `(N_valid_total, 1536)`**、batch reshape 要
+- `Gemma4ImageProcessor` を直接使用 (自作 patchify 禁止)
+- `max_soft_tokens` supported 値: `{70, 140, 280, 560, 1120}`、default 280 (YAML で切替可)
+- `attn_implementation = "sdpa"` (FA-2 未使用、torch 2.11 native SDPA)
+- `do_normalize=False` なので VLA 側 ImageNet 正規化を削除
 
 ---
 
@@ -101,7 +124,7 @@ The 60k Stage 3c-0 checkpoint is **discarded**. Fresh pretrain from step 0 is pl
 
 ## Phase 1: Core Architecture (Tasks 1–8)
 
-### Task 1: Create WristResNet18 encoder module
+### Task 1: Create WristResNet18 encoder module  ✅ COMPLETED (commit 7d8dc5d)
 
 **Files:**
 - Create: `VLA-Adapter/prismatic/models/backbones/vision/wrist_resnet18.py`
@@ -247,7 +270,7 @@ EOF
 
 ---
 
-### Task 2: Remove `film_gen` dead code from MLPResNetBlock_Pro
+### Task 2: Remove `film_gen` dead code from MLPResNetBlock_Pro  ✅ COMPLETED (commit 0235b0f)
 
 **Files:**
 - Modify: `VLA-Adapter/prismatic/models/action_heads.py:287-410`
@@ -363,7 +386,7 @@ EOF
 
 ---
 
-### Task 3: Add `h_w`, `h_sp` concat to `MLPResNet.forward`
+### Task 3: Add `h_w`, `h_sp` concat to `MLPResNet.forward`  ✅ COMPLETED (commit 835219a)
 
 **Files:**
 - Modify: `VLA-Adapter/prismatic/models/action_heads.py:84-121`
@@ -537,7 +560,7 @@ EOF
 
 ---
 
-### Task 4: Update `L1RegressionActionHead.predict_action` signature
+### Task 4: Update `L1RegressionActionHead.predict_action` signature  ✅ COMPLETED (commit 373b2fe)
 
 **Files:**
 - Modify: `VLA-Adapter/prismatic/models/action_heads.py:43-80`
@@ -623,13 +646,20 @@ EOF
 
 ---
 
-### Task 5: Switch model load to `Gemma4ForConditionalGeneration`
+### Task 5: Switch model load to `Gemma4ForConditionalGeneration`  ✅ COMPLETED (commit b9b19d3)
+
+> **Rev 3 訂正 (実装済み):**
+> - Gemma 4 は `multi_modal_projector` ではなく `embed_vision` (`Gemma4MultimodalEmbedder`) を持つ。この Step 1 inspection で判明、Task 6 へ反映。
+> - `attn_implementation` は **`"sdpa"` を維持** (FA-2 への切替は取りやめ)。理由: flash-attn 2.x は torch 2.11 用 wheel 未提供、torch 2.11 の native SDPA に Flash backend 組込あり。以降の Step 3-5 で "sdpa → flash_attention_2 に変更" と記述されているが、**実際には sdpa を維持した**。
+> - smoke test は `.venv-gemma4/bin/python` で実行済み、vision_tower / embed_vision / language_model の 3 submodule 存在確認、および `get_image_features` 単体動作確認も済。
 
 **Files:**
 - Modify: `VLA-Adapter/prismatic/extern/hf/modeling_prismatic_gemma4.py`
 - Modify: `VLA-Adapter/vla-scripts/finetune_gemma4.py`
 
-**What and why:** Spec §5.1. The current code loads `AutoModelForCausalLM` which gives the text-only Gemma 4 LM. We need `Gemma4ForConditionalGeneration` to get both `vision_tower` (native vision, frozen) and `multi_modal_projector` (native projector) alongside the language model.
+**What and why:** Spec §5.1. The current code loads `AutoModelForCausalLM` which gives the text-only Gemma 4 LM. We need `Gemma4ForConditionalGeneration` to get both `vision_tower` (native vision, frozen) and `embed_vision` (native projector) alongside the language model.
+
+(Historical steps below — the code changes described here were implemented with the rev 3 corrections noted above; commit b9b19d3.)
 
 - [ ] **Step 1: Inspect the loaded `Gemma4ForConditionalGeneration` structure**
 
@@ -722,7 +752,7 @@ import sys; sys.path.insert(0, 'VLA-Adapter')
 import torch
 from transformers import Gemma4ForConditionalGeneration
 m = Gemma4ForConditionalGeneration.from_pretrained(
-    'google/gemma-4-E2B', dtype=torch.bfloat16, attn_implementation='flash_attention_2'
+    'google/gemma-4-E2B', dtype=torch.bfloat16, attn_implementation='sdpa'
 ).to('cuda').eval()
 assert hasattr(m.model, 'vision_tower')
 assert hasattr(m.model, 'multi_modal_projector')
@@ -752,34 +782,167 @@ EOF
 
 ---
 
-### Task 6: Replace DinoSigLIP path with Gemma 4 native vision in `VLAAdapterGemma4`
+### Task 6: Integrate Gemma 4 native vision via `Gemma4ImageProcessor` + `embed_vision`
 
 **Files:**
 - Modify: `VLA-Adapter/prismatic/extern/hf/modeling_prismatic_gemma4.py` (major)
+- Modify: `VLA-Adapter/prismatic/vla/constants_gemma4.py` (NUM_VISION_TOKENS 廃止)
+- Create: `scripts/gemma4/test_task6_native_vision.py` (smoke + preprocess sanity)
 
-**What and why:** Spec §5.1. The outer `VLAAdapterGemma4` currently takes a separate `DinoSigLIPViTBackbone` and projects its output to LLM dim via `VisionProjector`. We replace both with Gemma 4's native `vision_tower` + `multi_modal_projector`. This removes ~400M DinoSigLIP + VisionProjector params.
+**What and why:** Spec §5.1 (rev 3). 現 `VLAAdapterGemma4` は `DinoSigLIPViTBackbone` + 自作 `VisionProjector` を使用。これを Gemma 4 内蔵の `vision_tower` + `embed_vision` に置換する。rev 3 で判明した仕様を考慮:
 
-- [ ] **Step 1: Note the current `VLAAdapterGemma4.__init__` signature and fields to remove**
+- `vision_tower` 入力は **patchified** `(B, max_patches, 768)` + `pixel_position_ids (B, max_patches, 2)` が必須 (raw 画像不可)
+- `embed_vision` (`Gemma4MultimodalEmbedder`: RMSNorm + Linear) が projector 役 (旧 spec の `multi_modal_projector` は存在しない)
+- 出力は **padding-stripped flat** `(N_valid_total, 1536)`、batch reshape に `num_soft_tokens_per_image` を使う
+- `Gemma4ImageProcessor.preprocess()` を使い、**自作 patchify は書かない**
+- `do_normalize=False` (processor は ImageNet 正規化しない)、VLA 側の ImageNet 正規化は Task 14 で除去
 
-Open `VLA-Adapter/prismatic/extern/hf/modeling_prismatic_gemma4.py` and locate `VLAAdapterGemma4.__init__` (around lines 93–158). Fields to remove:
-- `vision_backbone` parameter
-- `self.vision_backbone = ...`
-- `self.vision_projector = VisionProjector(...)`
-- The `VisionProjector` class itself (around lines 66–77)
+本タスクは "`VLAAdapterGemma4` 内部だけ" に閉じる: image processor は model が __init__ で保持し forward で呼ぶ。data loader 側の変更は Task 14 で扱う。
 
-Fields to keep:
-- `self.llm` (now a `Gemma4ForConditionalGeneration` instance)
-- `self.proprio_projector`
-- `self.action_queries`
-- `self.feature_norm`
-- `self.action_head`
-- `self.soft_prompt_library`
+- [ ] **Step 1: Pre-implementation inspection (既存コードと Gemma 4 API)**
 
-- [ ] **Step 2: Refactor `__init__` to remove DinoSigLIP dependencies**
+必要な情報を集める。subagent 不要、実行して出力を記録するだけ:
 
-In `VLAAdapterGemma4.__init__`, delete the `VisionProjector` class definition and the `vision_backbone` / `vision_projector` references. Example of new `__init__` signature:
+```bash
+# 1. 既存 __init__ signature
+grep -n "class VLAAdapterGemma4" VLA-Adapter/prismatic/extern/hf/modeling_prismatic_gemma4.py
+grep -n "def __init__\|vision_backbone\|vision_projector\|VisionProjector" \
+  VLA-Adapter/prismatic/extern/hf/modeling_prismatic_gemma4.py | head -30
 
-Before:
+# 2. 既存 forward の vision 周り
+grep -n "vision_backbone\|vision_projector\|pixel_values" \
+  VLA-Adapter/prismatic/extern/hf/modeling_prismatic_gemma4.py | head -20
+
+# 3. NUM_VISION_TOKENS の使用箇所
+grep -rn "NUM_VISION_TOKENS" VLA-Adapter/prismatic/ | head -20
+
+# 4. Gemma 4 image processor の supported 値確認
+.venv-gemma4/bin/python -c "
+from transformers.models.gemma4.image_processing_gemma4 import Gemma4ImageProcessor, _SUPPORTED_SOFT_TOKENS
+print('supported:', _SUPPORTED_SOFT_TOKENS)
+p = Gemma4ImageProcessor(max_soft_tokens=280)
+print('default max_soft_tokens:', p.max_soft_tokens)
+print('do_normalize:', p.do_normalize, 'do_rescale:', p.do_rescale)
+"
+```
+
+期待出力: `_SUPPORTED_SOFT_TOKENS = (70, 140, 280, 560, 1120)`, `do_normalize=False`, `do_rescale=True`.
+
+- [ ] **Step 2: Write the failing smoke test**
+
+Create `scripts/gemma4/test_task6_native_vision.py`:
+
+```python
+"""Task 6 smoke: VLAAdapterGemma4 が Gemma 4 native vision で動くか。
+Run:
+    CUDA_VISIBLE_DEVICES=0 .venv-gemma4/bin/python scripts/gemma4/test_task6_native_vision.py
+"""
+import os
+import sys
+from pathlib import Path
+
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(REPO_ROOT / "VLA-Adapter"))
+
+import torch
+from transformers import Gemma4ForConditionalGeneration
+from prismatic.extern.hf.modeling_prismatic_gemma4 import VLAAdapterGemma4
+
+
+def main():
+    device = torch.device("cuda")
+
+    print("[1] Load Gemma4ForConditionalGeneration ...")
+    gemma = Gemma4ForConditionalGeneration.from_pretrained(
+        "google/gemma-4-E2B",
+        dtype=torch.bfloat16,
+        attn_implementation="sdpa",
+    ).to(device).eval()
+
+    print("[2] Instantiate VLAAdapterGemma4 (no vision_backbone arg) ...")
+    model = VLAAdapterGemma4(
+        gemma_model=gemma,
+        max_soft_tokens=280,          # spec rev 3 default
+        proprio_dim=8,
+        action_dim=7,
+        num_action_chunks=8,
+        num_pretrain_datasets=1,
+        num_soft_prompt_tokens=32,
+    ).to(device)
+    model.eval()
+
+    # num_vision_tokens は max_soft_tokens=280 で 256 になる (実測値)
+    assert model.num_vision_tokens == 256, \
+        f"expected 256 vision tokens at max_soft_tokens=280, got {model.num_vision_tokens}"
+    print(f"  model.num_vision_tokens = {model.num_vision_tokens}")
+
+    print("[3] Run vision preprocess + get_image_features ...")
+    # fake 2-image batch, 224x224 uint8-equivalent
+    scene_imgs = torch.rand(2, 3, 224, 224) * 255   # CPU, [0, 255]
+    h_v = model.encode_scene(scene_imgs)
+    expected = (2, 256, 1536)
+    assert tuple(h_v.shape) == expected, \
+        f"expected scene vision shape {expected}, got {tuple(h_v.shape)}"
+    print(f"  h_v shape = {tuple(h_v.shape)}")
+
+    print("[4] Verify embed_vision presence (not multi_modal_projector) ...")
+    assert hasattr(model.llm.model, "embed_vision"), \
+        "Gemma 4 expects .embed_vision attribute"
+    assert not hasattr(model.llm.model, "multi_modal_projector"), \
+        "multi_modal_projector must not be present"
+    print(f"  embed_vision OK, no multi_modal_projector")
+
+    print("[5] Verify vision_tower + embed_vision frozen ...")
+    for n, p in model.llm.model.vision_tower.named_parameters():
+        assert not p.requires_grad, f"vision_tower param {n} must be frozen"
+    for n, p in model.llm.model.embed_vision.named_parameters():
+        assert not p.requires_grad, f"embed_vision param {n} must be frozen"
+    print(f"  vision_tower + embed_vision all frozen")
+
+    print("\nOK: Task 6 smoke passed")
+
+
+if __name__ == "__main__":
+    main()
+```
+
+- [ ] **Step 3: Run test to verify it fails**
+
+```bash
+cd /misc/dl00/takaki/vla-gemma-4
+CUDA_VISIBLE_DEVICES=0 .venv-gemma4/bin/python scripts/gemma4/test_task6_native_vision.py
+```
+
+Expected failure mode (いずれか): `TypeError: __init__() got an unexpected keyword argument 'max_soft_tokens'` または `AttributeError: 'VLAAdapterGemma4' object has no attribute 'num_vision_tokens'` / `encode_scene`.
+
+- [ ] **Step 4: Remove `VisionProjector` class + `DinoSigLIP` references**
+
+Open `VLA-Adapter/prismatic/extern/hf/modeling_prismatic_gemma4.py`.
+
+**4-a: Remove `VisionProjector` class** (ファイル先頭付近、だいたい class 定義が 66-77 行周辺):
+
+```python
+# DELETE the entire VisionProjector class:
+class VisionProjector(nn.Module):
+    """Projects DinoSigLIP features (2048-dim) to LLM hidden dim."""
+    def __init__(self, vision_dim: int, llm_dim: int, initial_projection_dim: int = 8192):
+        ...
+```
+
+**4-b: Remove import of DinoSigLIP** (もし top-level import されていれば):
+
+```python
+# DELETE if present:
+from prismatic.models.backbones.vision.dinosiglip_vit import DinoSigLIPViTBackbone
+```
+
+- [ ] **Step 5: Refactor `VLAAdapterGemma4.__init__`**
+
+Change the signature and fields. Locate `class VLAAdapterGemma4(nn.Module)` → `def __init__` (around lines 93-158 in current file).
+
+**Before:**
+
 ```python
     def __init__(
         self,
@@ -793,13 +956,31 @@ Before:
         num_pretrain_datasets: int = 0,
         num_soft_prompt_tokens: int = 32,
     ):
+        super().__init__()
+        self.llm = gemma_model
+        self.vision_backbone = vision_backbone
+        for p in self.vision_backbone.parameters():
+            p.requires_grad = False
+        self.vision_backbone.eval()
+
+        llm_dim = self.llm.config.hidden_size
+        vision_dim = self.vision_backbone.embed_dim
+
+        self.vision_projector = VisionProjector(
+            vision_dim=vision_dim,
+            llm_dim=llm_dim,
+            initial_projection_dim=initial_projection_dim,
+        )
+        # ... other fields
 ```
 
-After:
+**After:**
+
 ```python
     def __init__(
         self,
-        gemma_model: nn.Module,   # Gemma4ForConditionalGeneration instance
+        gemma_model: nn.Module,          # Gemma4ForConditionalGeneration instance
+        max_soft_tokens: int = 280,      # ∈ {70, 140, 280, 560, 1120}, see Gemma4ImageProcessor
         feature_norm: Optional[nn.Module] = None,
         proprio_dim: int = 8,
         action_dim: int = 7,
@@ -807,41 +988,82 @@ After:
         num_pretrain_datasets: int = 0,
         num_soft_prompt_tokens: int = 32,
     ):
-```
-
-Delete the `VisionProjector` class (lines ~66–77) entirely.
-
-Delete these lines from `__init__`:
-```python
-        self.vision_backbone = vision_backbone
-        for p in self.vision_backbone.parameters():
-            p.requires_grad = False
-        self.vision_backbone.eval()
-
-        ...
-
-        self.vision_projector = VisionProjector(
-            vision_dim=vision_dim,
-            llm_dim=llm_dim,
-            initial_projection_dim=initial_projection_dim,
-        )
-```
-
-Also delete or update `vision_dim = self.vision_backbone.embed_dim` line.
-
-Freeze Gemma 4 vision_tower + multi_modal_projector explicitly:
-
-```python
-        # Freeze all of Gemma 4 (vision_tower, multi_modal_projector, language_model)
+        super().__init__()
+        self.llm = gemma_model
+        # Freeze ALL of Gemma 4 (vision_tower + embed_vision + language_model + audio_tower + embed_audio).
+        # LoRA (Mode A) は後工程で LM の target_modules だけ trainable 化する。
         for p in self.llm.parameters():
             p.requires_grad = False
+
+        # --- Gemma 4 native vision preprocessor ---
+        # Gemma4ImageProcessor は自前 patchify + pixel_position_ids 生成を担う。
+        # Gemma4VideoProcessor を巻き込まないよう image_processor を直接 import。
+        from transformers.models.gemma4.image_processing_gemma4 import Gemma4ImageProcessor
+        self.image_processor = Gemma4ImageProcessor(max_soft_tokens=max_soft_tokens)
+        self.max_soft_tokens = max_soft_tokens
+
+        # num_vision_tokens を実測で決める (224x224 dummy image で processor に聞く)。
+        # max_soft_tokens に対する num_soft_tokens_per_image は Gemma4 の resize 仕様で決まり、
+        # 入力画像サイズに依らず固定される (処理器が aspect-ratio-preserving resize する)。
+        _dummy = torch.rand(3, 224, 224) * 255
+        _out = self.image_processor.preprocess(_dummy, return_tensors="pt")
+        self.num_vision_tokens: int = int(_out["num_soft_tokens_per_image"][0])
+        # 実測: max_soft_tokens=70→64, 140→121, 280→256
+
+        llm_dim = self.llm.config.text_config.hidden_size   # Gemma 4 E2B = 1536
+
+        # 既存の他 field はそのまま (proprio_projector, action_queries, feature_norm,
+        # action_head, soft_prompt_library)。
+        # ...
 ```
 
-(If this was already present, leave it — Gemma 4 ForConditionalGeneration includes all three as submodules, so one loop freezes them all.)
+注意: `num_vision_tokens` は **Gemma 4 processor の behavior に依存する変数**。`NUM_VISION_TOKENS` constant は廃止し、model 側で保持する。
 
-- [ ] **Step 3: Update the `forward` to use native vision**
+- [ ] **Step 6: Add `encode_scene` helper method**
 
-In `VLAAdapterGemma4.forward` (around lines 178–268), the section that processes vision needs to change. The current code does:
+これは `VLAAdapterGemma4` の forward から呼ばれる vision pipeline wrapper。Spec §5.1 の "Vision forward" 部を method 化:
+
+`VLAAdapterGemma4` の __init__ の下に:
+
+```python
+    def encode_scene(self, scene_images) -> torch.Tensor:
+        """Gemma 4 native vision で scene image → (B, num_vision_tokens, llm_dim).
+
+        Args:
+            scene_images: PIL images / numpy / torch tensor。
+                tensor の場合は (B, 3, H, W) で [0, 255] float か uint8。
+                processor が内部で aspect-ratio-preserving resize + patchify + rescale(÷255) を行う。
+
+        Returns:
+            h_v: (B, num_vision_tokens, llm_dim) reshaped pooled tokens.
+        """
+        device = self.llm.device
+        dtype = self.llm.dtype  # bfloat16
+
+        # Preprocess: raw → patchified pixel_values + pixel_position_ids
+        out = self.image_processor.preprocess(scene_images, return_tensors="pt")
+        pv = out["pixel_values"].to(device, dtype=dtype)             # (B, max_patches, 768)
+        pi = out["image_position_ids"].to(device)                    # (B, max_patches, 2)
+        B = pv.shape[0]
+
+        # Vision tower + embed_vision (pooler_output は embed_vision 適用後)
+        feats = self.llm.model.get_image_features(pv, pi)
+        # feats.pooler_output: (N_valid_total, 1536) padding-stripped flat
+        # B image 分の valid token が並んでいる。fixed input size なら batch 内で均一。
+
+        # Reshape back to (B, N, 1536). N は model 起動時に決まる self.num_vision_tokens。
+        n = self.num_vision_tokens
+        assert feats.pooler_output.shape[0] == B * n, \
+            f"pooler_output flat length {feats.pooler_output.shape[0]} != B*n = {B}*{n}"
+        h_v = feats.pooler_output.view(B, n, -1)
+        return h_v
+```
+
+- [ ] **Step 7: Update `VLAAdapterGemma4.forward` to use `encode_scene`**
+
+`forward` の中で、旧 `self.vision_backbone(pixel_values)` + `self.vision_projector(...)` を呼んでいた部分を置換。
+
+**Before (削除):**
 
 ```python
         # ---- Vision features ----
@@ -849,67 +1071,114 @@ In `VLAAdapterGemma4.forward` (around lines 178–268), the section that process
         vision_projected = self.vision_projector(vision_features)      # (B, 512, llm_dim)
 ```
 
-Replace with Gemma 4 native vision. Note: Gemma 4's `vision_tower` expects image pixel values in its own processor format. For now, accept pixel_values in the shape it expects:
+**After:**
 
 ```python
-        # ---- Vision features (Gemma 4 native) ----
-        # pixel_values: (B, 3, H, W) or processed via Gemma 4 image processor (depends on caller)
-        # self.llm.model.vision_tower returns (B, num_patches, 768) before pooling
-        # multi_modal_projector projects 768 -> 1536
-        # For VLA we only use the scene view (slot 0); wrist is handled separately (Task 8)
-        scene_pixel_values = pixel_values["scene"]   # (B, 3, H, W)
-        vision_out = self.llm.model.vision_tower(scene_pixel_values)
-        vision_features = vision_out.last_hidden_state   # (B, num_tokens, 768)
-        vision_projected = self.llm.model.multi_modal_projector(vision_features)  # (B, num_tokens, 1536)
+        # ---- Vision features (Gemma 4 native, scene only) ----
+        # pixel_values は dict { "scene": raw_images } 形式で data loader から来る想定
+        # (Task 14 で taco_solo_loader が dict を返すようにする)。
+        scene_imgs = pixel_values["scene"] if isinstance(pixel_values, dict) else pixel_values
+        vision_projected = self.encode_scene(scene_imgs)    # (B, num_vision_tokens, llm_dim)
 ```
 
-Note: the exact API for `vision_tower` invocation (whether it returns `BaseModelOutputWithPooling` or similar) must match Task 5 Step 1 inspection output. Adjust based on actual structure — if `vision_tower` takes additional args like `pixel_position_ids`, include them per HF docs. **Inspect the Gemma4VisionModel signature before implementing:**
+`forward` 内でこの後 `vision_projected` を使っている他の箇所 (例: LLM input embeddings への concat、または Bridge Attention position の設定) は変更不要。ただし、LLM に渡す image token 数は `self.num_vision_tokens` (可変) なので、固定で 512 (DinoSigLIP) を仮定していた code path があれば `self.num_vision_tokens` に置換すること。
+
+**具体的に確認するポイント:** `forward` 内で `NUM_VISION_TOKENS` or `512` のハードコード箇所があれば `self.num_vision_tokens` へ。grep で確認:
 
 ```bash
-.venv-gemma4/bin/python -c "
-import inspect
-from transformers.models.gemma4.modeling_gemma4 import Gemma4VisionModel
-print(inspect.signature(Gemma4VisionModel.forward))
-"
+grep -n "NUM_VISION_TOKENS\|\b512\b" \
+  VLA-Adapter/prismatic/extern/hf/modeling_prismatic_gemma4.py
 ```
 
-Record the exact signature and adapt the call accordingly.
+- [ ] **Step 8: Retire `NUM_VISION_TOKENS` constant usage**
 
-- [ ] **Step 4: Update `NUM_VISION_TOKENS` constant if needed**
+`VLA-Adapter/prismatic/vla/constants_gemma4.py` の `NUM_VISION_TOKENS` 定数を残しつつ意味を変える (互換のため):
 
-In `VLA-Adapter/prismatic/vla/constants_gemma4.py`, check the value of `NUM_VISION_TOKENS`. It is currently set for DinoSigLIP (512 tokens for 2 views). For Gemma 4 native vision with soft_tokens=280 (default) and scene-only (1 view), this should become **280**.
-
-```bash
-grep -n "NUM_VISION_TOKENS" VLA-Adapter/prismatic/vla/constants_gemma4.py
-```
-
-Update:
-
-Before:
 ```python
+# Before:
 NUM_VISION_TOKENS = 512   # DinoSigLIP 2 views
+
+# After:
+# DEPRECATED: max_soft_tokens が YAML で可変になったため、constant 廃止。
+# 参照側 (action_head, bridge attn など) は model.num_vision_tokens を使う。
+# このファイルから import している箇所は code grep で洗い出し、model 属性へ置換する。
+NUM_VISION_TOKENS = None   # trap: 誤使用するとすぐ TypeError になる
 ```
 
-After:
+使用箇所 (`grep -rn "NUM_VISION_TOKENS"` で洗い出し) を `model.num_vision_tokens` (VLAAdapterGemma4 インスタンス経由) に置換する。`action_heads.py` や Bridge 周りで使われていれば、引数経由で渡すか constructor で受ける。
+
+例 (action_heads.py):
+
 ```python
-NUM_VISION_TOKENS = 280   # Gemma 4 native vision, default max_soft_tokens, scene view only
+# Before
+from prismatic.vla.constants_gemma4 import NUM_VISION_TOKENS
+...
+def __init__(self, ..., num_vision_tokens: int = NUM_VISION_TOKENS):
+
+# After
+def __init__(self, ..., num_vision_tokens: int):
 ```
 
-(If the constant file uses a different value, update to 280 and document in comment.)
+そして VLAAdapterGemma4 側で action_head を生成する時に:
 
-- [ ] **Step 5: Commit**
+```python
+self.action_head = L1RegressionActionHead(
+    ...,
+    num_vision_tokens=self.num_vision_tokens,
+)
+```
+
+- [ ] **Step 9: Run smoke test to verify pass**
+
+```bash
+cd /misc/dl00/takaki/vla-gemma-4
+CUDA_VISIBLE_DEVICES=0 .venv-gemma4/bin/python scripts/gemma4/test_task6_native_vision.py
+```
+
+Expected output:
+```
+[1] Load Gemma4ForConditionalGeneration ...
+[2] Instantiate VLAAdapterGemma4 (no vision_backbone arg) ...
+  model.num_vision_tokens = 256
+[3] Run vision preprocess + get_image_features ...
+  h_v shape = (2, 256, 1536)
+[4] Verify embed_vision presence (not multi_modal_projector) ...
+  embed_vision OK, no multi_modal_projector
+[5] Verify vision_tower + embed_vision frozen ...
+  vision_tower + embed_vision all frozen
+
+OK: Task 6 smoke passed
+```
+
+- [ ] **Step 10: Run existing smoke tests to confirm no regression**
+
+```bash
+CUDA_VISIBLE_DEVICES=0 .venv-gemma4/bin/python scripts/gemma4/test_wrist_encoder_shape.py
+CUDA_VISIBLE_DEVICES=0 .venv-gemma4/bin/python scripts/gemma4/test_action_head_concat.py
+```
+
+両方 pass を確認。
+
+- [ ] **Step 11: Commit**
 
 ```bash
 git add VLA-Adapter/prismatic/extern/hf/modeling_prismatic_gemma4.py \
-        VLA-Adapter/prismatic/vla/constants_gemma4.py
+        VLA-Adapter/prismatic/vla/constants_gemma4.py \
+        scripts/gemma4/test_task6_native_vision.py
+# もし action_heads.py も NUM_VISION_TOKENS 関連で触ったら追加
 git commit -m "$(cat <<'EOF'
-feat(redesign): DinoSigLIP 廃止、Gemma 4 native vision に切替
+feat(redesign): Gemma 4 native vision 統合 (Gemma4ImageProcessor + embed_vision)
 
-VisionProjector クラス削除、vision_backbone 引数削除。
-scene 画像は self.llm.model.vision_tower + multi_modal_projector で処理
-(Gemma 4 同時 pretrain で feature alignment 獲得済)。
-NUM_VISION_TOKENS: 512 (DinoSigLIP 2view) → 280 (Gemma4 scene only、
-max_soft_tokens default)。
+Task 6 (dual-track redesign plan rev 3):
+- VisionProjector クラス削除、vision_backbone 引数削除
+- VLAAdapterGemma4 に max_soft_tokens 引数追加 (default 280、supported
+  {70, 140, 280, 560, 1120})
+- Gemma4ImageProcessor を __init__ で保持、self.num_vision_tokens を
+  processor 実測で決定 (max_soft_tokens=280 で 256 tokens/image)
+- encode_scene(scene_images) helper 追加: preprocess → vision_tower +
+  embed_vision → padding-stripped flat を (B, N, 1536) に reshape
+- NUM_VISION_TOKENS constant を deprecate、使用箇所は model.num_vision_tokens
+  属性経由に置換
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 EOF
@@ -1104,7 +1373,7 @@ from prismatic.extern.hf.modeling_prismatic_gemma4 import VLAAdapterGemma4
 
 device = 'cuda'
 gemma = Gemma4ForConditionalGeneration.from_pretrained(
-    'google/gemma-4-E2B', dtype=torch.bfloat16, attn_implementation='flash_attention_2'
+    'google/gemma-4-E2B', dtype=torch.bfloat16, attn_implementation='sdpa'
 ).to(device).eval()
 model = VLAAdapterGemma4(
     gemma_model=gemma,
@@ -1234,7 +1503,7 @@ import sys; sys.path.insert(0, 'VLA-Adapter')
 import torch
 from transformers import Gemma4ForConditionalGeneration
 m = Gemma4ForConditionalGeneration.from_pretrained(
-    'google/gemma-4-E2B', dtype=torch.bfloat16, attn_implementation='flash_attention_2'
+    'google/gemma-4-E2B', dtype=torch.bfloat16, attn_implementation='sdpa'
 ).to('cuda').eval()
 m.model.language_model.gradient_checkpointing_enable()
 print('OK: GC enabled on Gemma 4 text model')
@@ -1373,7 +1642,7 @@ import torch
 from transformers import Gemma4ForConditionalGeneration
 from prismatic.extern.hf.modeling_prismatic_gemma4 import VLAAdapterGemma4
 gemma = Gemma4ForConditionalGeneration.from_pretrained(
-    'google/gemma-4-E2B', dtype=torch.bfloat16, attn_implementation='flash_attention_2'
+    'google/gemma-4-E2B', dtype=torch.bfloat16, attn_implementation='sdpa'
 ).to('cuda').eval()
 for mode in ('quality', 'speed'):
     m = VLAAdapterGemma4(
@@ -1460,7 +1729,7 @@ After:
             bias="none",
             task_type=None,    # not a standard PEFT task, raw Module wrap
         )
-        # Wrap only the text model (language_model), not vision_tower / multi_modal_projector
+        # Wrap only the text model (language_model), not vision_tower / embed_vision
         model_vla.llm.model.language_model = get_peft_model(
             model_vla.llm.model.language_model, lora_cfg
         )
@@ -1493,7 +1762,7 @@ from prismatic.extern.hf.modeling_prismatic_gemma4 import VLAAdapterGemma4
 from peft import LoraConfig, get_peft_model
 
 gemma = Gemma4ForConditionalGeneration.from_pretrained(
-    'google/gemma-4-E2B', dtype=torch.bfloat16, attn_implementation='flash_attention_2'
+    'google/gemma-4-E2B', dtype=torch.bfloat16, attn_implementation='sdpa'
 ).to('cuda').eval()
 m = VLAAdapterGemma4(
     gemma_model=gemma, num_pretrain_datasets=1, training_mode='quality',
@@ -1518,7 +1787,7 @@ git commit -m "$(cat <<'EOF'
 feat(dual-track): Mode A に LoRA (r=16 on q/k/v/o_proj) 統合
 
 peft.get_peft_model で Gemma 4 LM の language_model サブツリーのみ LoRA wrap。
-vision_tower / multi_modal_projector は frozen のまま (scene feature は
+vision_tower / embed_vision は frozen のまま (scene feature は
 pretrained alignment に任せる設計)。LoRA trainable ~4M 程度。
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
@@ -1548,7 +1817,13 @@ training_mode: "quality"
 
 # Model
 gemma_model_id: "google/gemma-4-E2B"
-attn_implementation: "flash_attention_2"
+attn_implementation: "sdpa"   # torch 2.11 native SDPA + Flash backend、flash-attn 2.x wheel 無しで FA-2 は諦め
+
+# Gemma 4 native vision (Task 6)
+max_soft_tokens: 280          # ∈ {70, 140, 280, 560, 1120}、default 280 (pretrain natural)
+                              # 70: 64 tokens/image (compute 最小)
+                              # 140: 121 tokens/image (balanced)
+                              # 280: 256 tokens/image (alignment 最大)
 
 # LoRA
 lora_r: 16
@@ -1590,7 +1865,11 @@ training_mode: "speed"
 
 # Model
 gemma_model_id: "google/gemma-4-E2B"
-attn_implementation: "flash_attention_2"
+attn_implementation: "sdpa"   # 同上、FA-2 は使わない
+
+# Gemma 4 native vision (Task 6)
+max_soft_tokens: 280          # Mode B は vision compute も効くので 70 or 140 で高速化を狙う価値あり。
+                              # Phase 0 smoke 結果次第で切替
 
 # LoRA (ignored when training_mode=="speed")
 lora_r: 0
@@ -1751,7 +2030,8 @@ sys.path.insert(0, str(SCRIPTS_GEMMA4))
 from prismatic.vla.constants_gemma4 import (  # noqa: E402
     ACTION_TOKEN_BEGIN_IDX,
     NUM_ACTION_TOKENS,
-    NUM_VISION_TOKENS,
+    # NOTE: NUM_VISION_TOKENS は deprecated (Task 6 で廃止)。
+    # num_vision_tokens は model.num_vision_tokens 属性 (VLAAdapterGemma4) から取得する。
     PROPRIO_PLACEHOLDER_IDX,
     VISION_PLACEHOLDER_BEGIN_IDX,
 )
@@ -1967,7 +2247,7 @@ def build_model(mode: str, device="cuda"):
     gemma = Gemma4ForConditionalGeneration.from_pretrained(
         "google/gemma-4-E2B",
         dtype=torch.bfloat16,
-        attn_implementation="flash_attention_2",
+        attn_implementation="sdpa",
     ).to(device).eval()
 
     model = VLAAdapterGemma4(
@@ -1996,10 +2276,20 @@ def build_model(mode: str, device="cuda"):
 
 
 def build_dummy_batch(B=2, device="cuda"):
-    """Construct a synthetic batch matching the new forward signature."""
+    """Construct a synthetic batch matching the new forward signature.
+
+    Important for scene images:
+    - Gemma4ImageProcessor expects CPU float or uint8 tensor in [0, 255] range
+      (do_rescale=True inside processor, do_normalize=False)
+    - Gemma4ImageProcessor does NOT want device-moved or bfloat16 tensors as input
+    - Wrist images go through WristResNet18 which expects CUDA bfloat16 [-ish, -ish]
+      (usually ImageNet normalized float in training)
+    """
     return {
         "pixel_values": {
-            "scene": torch.randn(B, 3, 224, 224, device=device, dtype=torch.bfloat16),
+            # scene: raw uint8-equivalent, on CPU. Processor handles resize + rescale + patchify.
+            "scene": torch.rand(B, 3, 224, 224) * 255,                          # CPU, float in [0, 255]
+            # wrist: ImageNet-normalized-ish bf16, already on GPU (ResNet18 input).
             "wrist": torch.randn(B, 3, 224, 224, device=device, dtype=torch.bfloat16),
         },
         "input_ids": torch.zeros(B, 300, device=device, dtype=torch.long),   # placeholder; adapt per constants_gemma4
