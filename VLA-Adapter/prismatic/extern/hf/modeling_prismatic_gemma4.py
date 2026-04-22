@@ -117,6 +117,10 @@ class VLAAdapterGemma4(nn.Module):
 
         self.proprio_projector = ProprioProjector(proprio_dim=proprio_dim, llm_dim=llm_dim)
 
+        # --- Wrist encoder (Task 8): trainable ResNet18, bypasses frozen LLM ---
+        from prismatic.models.backbones.vision.wrist_resnet18 import WristResNet18
+        self.wrist_encoder = WristResNet18(out_dim=llm_dim)
+
         self.action_queries = nn.Embedding(NUM_ACTION_TOKENS, llm_dim)
         self.action_queries.weight.data.zero_()
 
@@ -143,6 +147,14 @@ class VLAAdapterGemma4(nn.Module):
             )
         else:
             self.soft_prompt_library = None
+
+        # --- Trainable param count (Task 8: wrist_encoder ~12M added) ---
+        # 実測: ~541 M (ActionHead ~528M + ProprioProjector + action_queries + WristResNet18 + SoftPromptLibrary)
+        # 幅広の sanity range (500-620 M) に留め、exact な 577M 仮説には tie しない。
+        total_trainable = sum(p.numel() for p in self.parameters() if p.requires_grad) / 1e6
+        print(f"[VLAAdapterGemma4] trainable params: {total_trainable:.3f} M")
+        assert 500.0 < total_trainable < 620.0, \
+            f"trainable params out of expected range: got {total_trainable:.3f} M (expected ~541M baseline)"
 
     # -----------------------------------------------------------------
     # 便宜 property
@@ -197,11 +209,9 @@ class VLAAdapterGemma4(nn.Module):
     # -----------------------------------------------------------------
     def forward(
         self,
-        pixel_values: Dict[str, torch.Tensor],
-        # pixel_values formats:
-        #   If dict: {"scene": (B, 3, H, W), "wrist": (B, 3, H, W)} (Task 14 format; wrist path added in Task 8)
-        #   If tensor: (B, 3, H, W) scene-only (legacy smoke path)
-        # Processed by self.image_processor (Gemma4ImageProcessor) inside encode_scene().
+        pixel_values: Dict[str, torch.Tensor],   # {"scene": (B, 3, H, W) raw or processed, "wrist": (B, 3, 224, 224) bf16}
+        # scene: Gemma4ImageProcessor が内部で resize + patchify (encode_scene 経由)
+        # wrist: WristResNet18 が (B, 49, llm_dim) に変換 (Task 8 で active)
         input_ids: torch.LongTensor,            # (B, L) placeholder 込み
         proprio: torch.Tensor,                  # (B, proprio_dim) raw
         actions: Optional[torch.Tensor] = None, # (B, 8, 7) or None
@@ -215,9 +225,13 @@ class VLAAdapterGemma4(nn.Module):
         # library 構築済 AND dataset_id 渡された場合のみ active。
         use_soft_prompt = (self.soft_prompt_library is not None) and (dataset_id is not None)
 
-        # ---- Vision features (Task 6: Gemma 4 native; scene only. wrist は Task 8 で扱う) ----
+        # ---- Vision features (Task 6: Gemma 4 native; scene path) ----
         scene_imgs = pixel_values["scene"] if isinstance(pixel_values, dict) else pixel_values
         h_v = self.encode_scene(scene_imgs)                # (B, num_vision_tokens, llm_dim)
+
+        # ---- Wrist features (Task 8: trainable ResNet18, bypasses frozen LLM) ----
+        wrist_pixel_values = pixel_values["wrist"]         # (B, 3, 224, 224) bf16 on GPU
+        h_w = self.wrist_encoder(wrist_pixel_values)       # (B, 49, llm_dim)
 
         # ---- PLE 事前計算 (OOM 回避) ----
         with torch.no_grad():
@@ -278,7 +292,7 @@ class VLAAdapterGemma4(nn.Module):
             proprio=proprio,
             proprio_projector=self.proprio_projector,
             phase="Training" if self.training else "Inference",
-            h_w=None,     # Task 8 で wrist feature を計算して差し替える
+            h_w=h_w,
             h_sp=h_sp,
         )
 
