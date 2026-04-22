@@ -41,11 +41,13 @@ class L1RegressionActionHead(nn.Module):
             )
 
     def predict_action(
-            self, 
-            actions_hidden_states, 
-            proprio=None, 
+            self,
+            actions_hidden_states,
+            proprio=None,
             proprio_projector=None,
-            phase="Inference"
+            phase="Inference",
+            h_w=None,
+            h_sp=None,
             ):
         batch_size = actions_hidden_states.shape[0]
         device = actions_hidden_states.device
@@ -75,7 +77,9 @@ class L1RegressionActionHead(nn.Module):
             rearranged_actions_hidden_states,
             h_a=actions_hidden_states,
             p=proprio_features,
-            h_t=task_hidden_states
+            h_t=task_hidden_states,
+            h_w=h_w,
+            h_sp=h_sp,
             )
 
         return action
