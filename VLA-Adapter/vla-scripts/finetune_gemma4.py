@@ -93,7 +93,8 @@ from test_08_data_pipeline import (  # noqa: E402
     PROMPT_MAX_LEN,
 )
 from prismatic.extern.hf.modeling_prismatic_gemma4 import VLAAdapterGemma4  # noqa: E402
-from prismatic.models.backbones.vision.dinosiglip_vit import DinoSigLIPViTBackbone  # noqa: E402
+# Task 13 fixup B: DinoSigLIPViTBackbone は Task 6 で VLAAdapterGemma4 から外れ、
+# 本 file 内でも build_model から construction を削除したため import も削除。
 
 
 # =============================================================================
@@ -155,6 +156,10 @@ class FinetuneConfig:
     # --- Phase 3c-0 optimization knobs (low-risk algorithmic optimizations) ---
     optim_fused: bool = False                  # T1: AdamW(fused=True)、期待 5-15% forward+backward overhead 削減
     attn_implementation: str = "sdpa"          # sdpa: torch 2.11 native SDPA (Flash backend 組込); flash-attn 2.x は torch2.11 用 wheel なし
+
+    # --- Gemma 4 native vision (Task 6/13) ---
+    max_soft_tokens: int = 280                 # ∈ {70, 140, 280, 560, 1120}、default 280 (pretrain natural)
+                                               # Gemma4ImageProcessor に渡り、vision patch/soft token 数を決定
 
     # --- Dual-Track (Task 9) ---
     # 後続 task (10-12) で action_queries / GC / LoRA / torch.no_grad wrap が
@@ -240,13 +245,10 @@ def compute_warmup_lr(gradient_step_idx: int, original_lr: float, warmup_steps: 
 # =============================================================================
 # Model / Data builders
 # =============================================================================
-def build_model(cfg: FinetuneConfig, device: torch.device) -> tuple[VLAAdapterGemma4, AutoTokenizer, DinoSigLIPViTBackbone]:
-    vision_backbone = DinoSigLIPViTBackbone(
-        vision_backbone_id=cfg.vision_backbone_id,
-        image_resize_strategy="resize-naive",
-        default_image_size=224,
-        image_sequence_len=2,
-    ).to(device, dtype=torch.bfloat16).eval()
+def build_model(cfg: FinetuneConfig, device: torch.device) -> tuple[VLAAdapterGemma4, AutoTokenizer]:
+    # Task 13 fixup B: DinoSigLIPViTBackbone 構築 block を削除。
+    # Task 6 以降、VLAAdapterGemma4 は Gemma 4 native vision (encode_scene) を使うため、
+    # 外部 vision_backbone は不要。
 
     tok = AutoTokenizer.from_pretrained(cfg.gemma_model_id)
     if tok.pad_token_id is None:
@@ -263,7 +265,7 @@ def build_model(cfg: FinetuneConfig, device: torch.device) -> tuple[VLAAdapterGe
 
     model_vla = VLAAdapterGemma4(
         gemma_model=gemma,
-        vision_backbone=vision_backbone,
+        max_soft_tokens=cfg.max_soft_tokens,               # Task 13 fixup A: Gemma4ImageProcessor に渡る
         feature_norm=torch.nn.Identity(),
         proprio_dim=cfg.proprio_dim,
         action_dim=cfg.action_dim,
@@ -315,14 +317,13 @@ def build_model(cfg: FinetuneConfig, device: torch.device) -> tuple[VLAAdapterGe
         model_vla.action_queries.weight.requires_grad = False
         print("[mode-B] action_queries frozen (zero init); LLM no_grad wrap active; no GC; no LoRA")
 
+    # Task 13 fixup C: Stage 2 stale な 675.138 M tight assertion を log-only に置換。
+    # Mode A+LoRA ≈ 546M, Mode B ≈ 541M と mode 次第で値が振れるため、
+    # VLAAdapterGemma4.__init__ 側の loose bound (500-620 M) に委ね、ここは print のみ。
     total_trainable = sum(p.numel() for p in model_vla.parameters() if p.requires_grad) / 1e6
-    # Soft Prompt 有効化時は trainable 数 +num_datasets × 32 × 1536 × 4 byte / 1M param 上乗せ許容
-    soft_prompt_expected_M = cfg.num_pretrain_datasets * cfg.num_soft_prompt_tokens * 1536 / 1e6
-    expected = 675.138 + soft_prompt_expected_M
-    assert abs(total_trainable - expected) < 0.5, \
-        f"trainable regressed: expected {expected:.3f}M (675.138 + {soft_prompt_expected_M:.3f}M soft prompt), got {total_trainable:.3f}M"
+    print(f"[build_model] trainable params: {total_trainable:.3f} M")
 
-    return model_vla, tok, vision_backbone
+    return model_vla, tok
 
 
 def build_dataloader(cfg: FinetuneConfig, tok, vision_backbone) -> DataLoader:
