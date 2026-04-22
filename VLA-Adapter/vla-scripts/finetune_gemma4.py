@@ -377,66 +377,104 @@ def build_pretrain_dataloader(cfg: FinetuneConfig, tok) -> DataLoader:
     )
 
 
-def build_pretrain_optimizer(model_vla, cfg: FinetuneConfig, inner_model) -> AdamW:
-    """Stage 3 pretrain 用 custom LR param groups (X-VLA 流、User plan §R21 準拠).
+def build_param_groups(model, cfg: FinetuneConfig) -> list:
+    """Dual-track (Task 17) optimizer param groups (Mode A / Mode B).
 
-    4 group 構成:
-      - vision_projector:      LR = base × learning_coef (= base × 0.25)
-      - soft_prompt_library:   LR = base × learning_coef
-      - action_head + proprio_projector + action_queries: LR = base
-      - (LLM + vision_backbone は frozen、requires_grad=False で除外)
+    Group 構成:
+      - wrist_encoder:         base LR (新規 Task 8、ResNet18 + projector)
+      - proprio_projector:     base LR
+      - action_head:           base LR
+      - action_queries:        base LR (Mode A のみ; Mode B は requires_grad=False で自動除外)
+      - soft_prompt_library:   base × learning_coef (X-VLA convention、両 mode)
+      - lora:                  base LR (Mode A のみ; language_model 配下 lora_* 収集、wd=0)
 
-    各 group の name は train loop 側で LR scheduler (freeze_steps + warmup_steps) が参照。
+    frozen param (requires_grad=False) は collect 時に自動除外。
+    weight_decay は pretrain_mode=True では pretrain_weight_decay (X-VLA 流 0.0)、
+    それ以外は weight_decay (Stage 1-2 flat 用)。LoRA は常時 wd=0.0。
+
+    起動時に group 毎 param count / LR を log。
     """
     base_lr = cfg.learning_rate
-    coef = cfg.learning_coef
-    wd = cfg.pretrain_weight_decay
-    betas = (0.9, cfg.pretrain_betas_beta2)
+    sp_coef = cfg.learning_coef
+    wd = cfg.pretrain_weight_decay if cfg.pretrain_mode else cfg.weight_decay
+    groups = []
 
-    # inner_model (DDP unwrap 済 VLAAdapterGemma4) から直接 module 取得
-    vproj = list(inner_model.vision_projector.parameters())
-    pproj = list(inner_model.proprio_projector.parameters())
-    aq = list(inner_model.action_queries.parameters())
-    ah = list(inner_model.action_head.parameters())
-    sp = list(inner_model.soft_prompt_library.parameters()) if inner_model.soft_prompt_library is not None else []
+    def _collect(mod, name, lr, weight_decay=wd):
+        if mod is None:
+            return
+        params = [p for p in mod.parameters() if p.requires_grad]
+        if params:
+            groups.append({"name": name, "params": params, "lr": lr, "weight_decay": weight_decay})
 
-    # 全 trainable ID set、漏れ検知用
-    expected_ids = set(id(p) for p in (vproj + pproj + aq + ah + sp))
-    actual_trainable = set(id(p) for p in model_vla.parameters() if p.requires_grad)
-    missing = actual_trainable - expected_ids
-    assert not missing, f"trainable param not in any group: {len(missing)} params、設計漏れ"
+    _collect(model.wrist_encoder, "wrist_encoder", base_lr)
+    _collect(model.proprio_projector, "proprio_projector", base_lr)
+    _collect(model.action_head, "action_head", base_lr)
 
-    param_groups = [
-        {"name": "vision_projector",    "params": vproj, "lr": base_lr * coef, "weight_decay": wd},
-        {"name": "soft_prompt_library", "params": sp,    "lr": base_lr * coef, "weight_decay": wd},
-        {"name": "action_head",         "params": ah,    "lr": base_lr,        "weight_decay": wd},
-        {"name": "proprio_projector",   "params": pproj, "lr": base_lr,        "weight_decay": wd},
-        {"name": "action_queries",      "params": aq,    "lr": base_lr,        "weight_decay": wd},
+    # action_queries: Mode A は trainable、Mode B は frozen (build_model で requires_grad=False)
+    if model.action_queries.weight.requires_grad:
+        groups.append({
+            "name": "action_queries",
+            "params": [model.action_queries.weight],
+            "lr": base_lr,
+            "weight_decay": wd,
+        })
+
+    _collect(model.soft_prompt_library, "soft_prompt_library", base_lr * sp_coef)
+
+    # LoRA: Mode A のみ (build_model で get_peft_model 適用済)
+    if cfg.training_mode == "quality":
+        lora_params = [
+            p for n, p in model.llm.model.language_model.named_parameters()
+            if p.requires_grad and "lora_" in n.lower()
+        ]
+        if lora_params:
+            groups.append({
+                "name": "lora",
+                "params": lora_params,
+                "lr": base_lr,
+                "weight_decay": 0.0,
+            })
+
+    # 漏れ検知 (trainable だが group に入っていない param)
+    grouped_ids = set(id(p) for g in groups for p in g["params"])
+    missing = [
+        n for n, p in model.named_parameters()
+        if p.requires_grad and id(p) not in grouped_ids
     ]
-    # Phase 3c-0 T1: fused=True で forward/backward kernel overhead 削減 (CUDA graph 互換 kernel)
-    opt = AdamW(param_groups, betas=betas, fused=cfg.optim_fused)
-    return opt
+    assert not missing, (
+        f"trainable param not in any group: {len(missing)} params, "
+        f"first 5: {missing[:5]}"
+    )
+
+    total = sum(sum(p.numel() for p in g["params"]) for g in groups) / 1e6
+    for g in groups:
+        n = sum(p.numel() for p in g["params"]) / 1e6
+        print(f"[param-groups] {g['name']}: {n:.3f} M, lr={g['lr']:.2e}, wd={g['weight_decay']}")
+    print(f"[param-groups] total trainable across groups: {total:.3f} M")
+    return groups
 
 
 def update_pretrain_lrs(optimizer: AdamW, step: int, cfg: FinetuneConfig) -> dict:
-    """X-VLA 流 two-step adaptation LR スケジュール (X-VLA/train.py:164-172 準拠).
+    """Dual-track (Task 17) pretrain LR スケジュール.
 
-    X-VLA mapping → Gemma 4 mapping:
-      X-VLA `vlm` / `transformer_core` (freeze 中 LR=0)  ≈  本実装 `vision_projector`
-      X-VLA `soft_prompts` (coef 適用、常時 active)       ≈  本実装 `soft_prompt_library`
-      X-VLA `action_heads` (常時 active、coef 非適用)      ≈  本実装 `action_head` + `proprio_projector` + `action_queries`
+    Group LR target:
+      - wrist_encoder:          base
+      - proprio_projector:      base
+      - action_head:            base
+      - action_queries:         base (Mode A のみ optimizer に存在)
+      - soft_prompt_library:    base × learning_coef
+      - lora:                   base (Mode A のみ)
 
-    Phase 1 (step < freeze_steps): prompt warmup phase
-      vision_projector: 0 (frozen、X-VLA vlm/transformer_core 相当)
-      soft_prompt_library: base × coef (active with coef)
-      action_head / proprio_projector / action_queries: base (active)
+    Phase 1 (step < freeze_steps): soft_prompt warmup
+      wrist_encoder: 0 (freeze、Gemma4 native scene tower と違い random init のため)
+      他 group: target (active)
 
-    Phase 2 (freeze_steps ≤ step < freeze_steps + warmup_steps): post-freeze vision warmup
-      vision_projector: 0 → base × coef linear warmup
-      soft_prompt_library / action_head / proprio / action_queries: base maintaining (no discontinuity)
+    Phase 2 (freeze_steps ≤ step < freeze_steps + warmup_steps): wrist_encoder linear warmup
+      wrist_encoder: 0 → base linear warmup
+      他 group: target 維持
 
     Phase 3 (step ≥ freeze_steps + warmup_steps): joint full-train
-      全 group: base (cosine decay は Plan §3c-2 errata で非採用、hard_stop_datetime で停止)
+      全 group: target (cosine decay は Plan §3c-2 errata で非採用、hard_stop_datetime で停止)
 
     戻り値: {group_name: current_lr} (log 用)
     """
@@ -445,30 +483,32 @@ def update_pretrain_lrs(optimizer: AdamW, step: int, cfg: FinetuneConfig) -> dic
     freeze = cfg.pretrain_freeze_steps
     warmup = cfg.pretrain_warmup_steps
     base_map = {
-        "vision_projector":    base_lr * coef,   # X-VLA vlm 相当 (coef 適用)
+        "wrist_encoder":       base_lr,          # random init、Phase 1 で freeze 対象
+        "proprio_projector":   base_lr,
+        "action_head":         base_lr,
+        "action_queries":      base_lr,          # Mode A のみ optimizer に存在
         "soft_prompt_library": base_lr * coef,   # X-VLA soft_prompts (coef 適用)
-        "action_head":         base_lr,          # X-VLA action_heads (coef 非適用)
-        "proprio_projector":   base_lr,          # 同上
-        "action_queries":      base_lr,          # 同上
+        "lora":                base_lr,          # Mode A のみ
     }
-    # freeze 中 LR=0 にする group (X-VLA vlm/transformer_core 相当)
-    VISION_ONLY_FROZEN = {"vision_projector"}
+    # freeze 中 LR=0 にする group: wrist_encoder (random init の新規 vision-side module)
+    # Gemma4 native vision (scene tower) は frozen なので対象外。
+    FROZEN_PHASE1 = {"wrist_encoder"}
     current = {}
     for g in optimizer.param_groups:
         name = g["name"]
         target = base_map[name]
         if step < freeze:
-            # Phase 1: vision_projector のみ freeze、他は active (X-VLA 準拠)
-            new_lr = 0.0 if name in VISION_ONLY_FROZEN else target
+            # Phase 1: wrist_encoder のみ freeze、他は active
+            new_lr = 0.0 if name in FROZEN_PHASE1 else target
         elif step < freeze + warmup:
-            # Phase 2: vision_projector のみ linear warmup、他は base 維持
-            if name in VISION_ONLY_FROZEN:
+            # Phase 2: wrist_encoder のみ 0→target linear warmup、他は target 維持
+            if name in FROZEN_PHASE1:
                 progress = (step - freeze) / max(1, warmup)
                 new_lr = target * progress
             else:
                 new_lr = target
         else:
-            # Phase 3: 全 group base
+            # Phase 3: 全 group target
             new_lr = target
         g["lr"] = new_lr
         current[name] = new_lr
@@ -786,34 +826,37 @@ def finetune(cfg: FinetuneConfig) -> None:
     inner_model = model_vla.module if cfg.ddp_mode else model_vla
 
     # --- Optimizer / Scheduler ---
-    # DDP wrap 後でも parameters() は underlying module を返す、requires_grad=True のみ collect
-    trainable_params = [p for p in model_vla.parameters() if p.requires_grad]
+    # Task 17: dual-track param groups (Mode A / Mode B 両対応)
+    # DDP wrap 後でも model_vla.parameters() は underlying module を返す。
+    # inner_model (DDP unwrap 済) を build_param_groups に渡し、attribute access で
+    # 確実に module を取得する。requires_grad=False な param は _collect 内で自動除外。
+    param_groups = build_param_groups(inner_model, cfg)
     if cfg.pretrain_mode:
-        # Stage 3: X-VLA 流 custom LR param groups + betas=(0.9, 0.95) + wd=0.0
-        optimizer = build_pretrain_optimizer(model_vla, cfg, inner_model)
+        # Stage 3: X-VLA 流 betas=(0.9, 0.95) + wd=0.0 (pretrain_weight_decay は build_param_groups 内で適用)
+        betas = (0.9, cfg.pretrain_betas_beta2)
+        optimizer = AdamW(param_groups, betas=betas, fused=cfg.optim_fused)
         scheduler = None   # pretrain は update_pretrain_lrs で per-step LR 制御、MultiStepLR 不使用
-        rprint(f"\nOptimizer: AdamW pretrain mode")
-        rprint(f"  betas=(0.9, {cfg.pretrain_betas_beta2})、wd={cfg.pretrain_weight_decay}")
-        rprint("  param groups (name, init lr, num_params, requires_grad=True):")
+        rprint(f"\nOptimizer: AdamW pretrain mode (Task 17 dual-track)")
+        rprint(f"  betas=(0.9, {cfg.pretrain_betas_beta2})、wd={cfg.pretrain_weight_decay}、training_mode={cfg.training_mode}")
+        rprint("  param groups (name, init lr, num_params, wd):")
         total_trainable_M = 0.0
         for g in optimizer.param_groups:
             n_params = sum(p.numel() for p in g["params"])
             total_trainable_M += n_params / 1e6
             rprint(f"    {g['name']:<22s}: lr={g['lr']:.3e}  num_params={n_params/1e6:7.3f}M  wd={g.get('weight_decay', 0.0)}")
-        rprint(f"  Total trainable (optimizer scope): {total_trainable_M:.3f}M "
-               f"(Stage 2 baseline 675.138M + soft_prompt {cfg.num_pretrain_datasets*cfg.num_soft_prompt_tokens*1536/1e6:.3f}M)")
-        rprint(f"  LR schedule X-VLA 準拠 (X-VLA/train.py:164-172):")
-        rprint(f"    Phase 1 (step <{cfg.pretrain_freeze_steps}): vision_projector LR=0、他 base")
-        rprint(f"    Phase 2 ({cfg.pretrain_freeze_steps}-{cfg.pretrain_freeze_steps+cfg.pretrain_warmup_steps}): vision_projector 0→base×coef linear warmup")
-        rprint(f"    Phase 3 (≥{cfg.pretrain_freeze_steps+cfg.pretrain_warmup_steps}): 全 group base、cosine decay 非採用")
+        rprint(f"  Total trainable (optimizer scope): {total_trainable_M:.3f}M")
+        rprint(f"  LR schedule (dual-track、wrist_encoder を freeze 対象に):")
+        rprint(f"    Phase 1 (step <{cfg.pretrain_freeze_steps}): wrist_encoder LR=0、他 target")
+        rprint(f"    Phase 2 ({cfg.pretrain_freeze_steps}-{cfg.pretrain_freeze_steps+cfg.pretrain_warmup_steps}): wrist_encoder 0→base linear warmup")
+        rprint(f"    Phase 3 (≥{cfg.pretrain_freeze_steps+cfg.pretrain_warmup_steps}): 全 group target、cosine decay 非採用")
         original_lr = cfg.learning_rate
     else:
-        # Stage 1-2: 従来 flat LR + manual warmup
-        optimizer = AdamW(trainable_params, lr=cfg.learning_rate, weight_decay=cfg.weight_decay,
-                          fused=cfg.optim_fused)
-        original_lr = optimizer.param_groups[0]["lr"]
+        # Stage 1-2: param groups は同じ (dual-track aware)、従来 flat LR + manual warmup
+        # Task 17: build_param_groups 経由で一本化、group 別 LR は X-VLA coef のみ active。
+        optimizer = AdamW(param_groups, fused=cfg.optim_fused)
+        original_lr = cfg.learning_rate
         scheduler = MultiStepLR(optimizer, milestones=[cfg.num_steps_before_decay], gamma=0.1)
-        rprint(f"\nOptimizer: AdamW(lr={original_lr}, wd={cfg.weight_decay})")
+        rprint(f"\nOptimizer: AdamW (Task 17 dual-track param groups)、lr={original_lr}, wd={cfg.weight_decay}")
         rprint(f"Scheduler: MultiStepLR(milestones=[{cfg.num_steps_before_decay}], gamma=0.1)")
         rprint(f"Warmup: 10% → 100% linear over {cfg.lr_warmup_steps} steps (原 finetune.py:1060-1065 準拠)")
 
