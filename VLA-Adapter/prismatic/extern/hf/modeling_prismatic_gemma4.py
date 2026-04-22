@@ -5,16 +5,18 @@ VLA-Adapter backbone を Gemma 4 E2B に置き換えた統合 nn.Module。
 Stage 1 (Phase 1b.6) で作成。
 
 構成:
-  - LLM: Gemma4ForConditionalGeneration (frozen)
-  - Vision backbone: DinoSigLIPViTBackbone (frozen)
-  - VisionProjector: vision_embed_dim → 8192 → llm_dim → llm_dim (trainable)
+  - LLM: Gemma4ForConditionalGeneration (frozen) — vision_tower + embed_vision 同梱
   - ProprioProjector: proprio_dim → llm_dim → llm_dim (trainable)
   - action_queries: Embedding(64, llm_dim), zero init (trainable)
   - feature_norm: Identity (1b.1 判定)、LayerNorm 差し替え可
   - action_head: L1RegressionActionHead(use_pro_version=True, ~640M, trainable)
 
+Task 6 (rev 3) で DinoSigLIP + VisionProjector を廃し、Gemma 4 純正の vision_tower +
+embed_vision (Gemma4MultimodalEmbedder) に置換。画像前処理は Gemma4ImageProcessor に委譲。
+
 forward pattern (1b.3-1b.5 で検証済み):
-  - input_ids: placeholder ID 含む系列 (vision 512 + action 64 + proprio 1 + bos/eos/prompt)
+  - input_ids: placeholder ID 含む系列 (vision N + action 64 + proprio 1 + bos/eos/prompt)
+    N = self.num_vision_tokens (max_soft_tokens=280 → 256)
   - PLE は input_ids から事前計算 (OOM 回避)
   - clone + advanced indexing で vision / action placeholder を上書き
   - Gemma4TextModel を直接呼ぶ (wrapper スキップ)
@@ -28,11 +30,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from prismatic.models.action_heads import L1RegressionActionHead
-from prismatic.models.backbones.vision.dinosiglip_vit import DinoSigLIPViTBackbone
 from prismatic.vla.constants_gemma4 import (
     ACTION_TOKEN_BEGIN_IDX,
     NUM_ACTION_TOKENS,
-    NUM_VISION_TOKENS,
     PROPRIO_PLACEHOLDER_IDX,
     VISION_PLACEHOLDER_BEGIN_IDX,
 )
@@ -63,20 +63,6 @@ class SoftPromptLibrary(nn.Module):
         return self.embedding(dataset_id).view(B, self.num_tokens, self.hidden_dim)
 
 
-class VisionProjector(nn.Module):
-    """3 層 MLP: vision_embed_dim → initial_projection_dim → llm_dim → llm_dim."""
-
-    def __init__(self, vision_dim: int, llm_dim: int, initial_projection_dim: int = 8192):
-        super().__init__()
-        self.fc1 = nn.Linear(vision_dim, initial_projection_dim, bias=True)
-        self.fc2 = nn.Linear(initial_projection_dim, llm_dim, bias=True)
-        self.fc3 = nn.Linear(llm_dim, llm_dim, bias=True)
-        self.act = nn.GELU()
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.fc3(self.act(self.fc2(self.act(self.fc1(x)))))
-
-
 class ProprioProjector(nn.Module):
     """2 層 MLP: proprio_dim → llm_dim → llm_dim."""
 
@@ -96,12 +82,11 @@ class VLAAdapterGemma4(nn.Module):
     def __init__(
         self,
         gemma_model: nn.Module,                 # Gemma4ForConditionalGeneration instance
-        vision_backbone: DinoSigLIPViTBackbone, # 実 DINO+SigLIP instance
         feature_norm: Optional[nn.Module] = None,
         proprio_dim: int = 8,
         action_dim: int = 7,
         num_action_chunks: int = 8,
-        initial_projection_dim: int = 8192,
+        max_soft_tokens: int = 280,              # Task 6 rev 3 default (→ 256 vision tokens)
         # --- Stage 3 Soft Prompt (X-VLA 準拠、配置 案 B = LLM inputs_embeds 前段) ---
         # num_pretrain_datasets=0 (default) で soft_prompt 無効化、Stage 1-2 と backward compatible
         num_pretrain_datasets: int = 0,
@@ -112,22 +97,24 @@ class VLAAdapterGemma4(nn.Module):
         self.llm.config.use_cache = True                    # G1 対策
         assert not getattr(self.llm, "is_gradient_checkpointing", False), \
             "gradient_checkpointing must be off (Stage 1 前提、KV 共有バグ回避)"
+        # Freeze ALL of Gemma 4 (vision_tower + embed_vision + language_model + audio_tower + embed_audio)
         for p in self.llm.parameters():
             p.requires_grad = False
 
-        self.vision_backbone = vision_backbone
-        for p in self.vision_backbone.parameters():
-            p.requires_grad = False
-        self.vision_backbone.eval()
+        # --- Gemma 4 native vision preprocessor ---
+        # Import Gemma4ImageProcessor directly to avoid Gemma4VideoProcessor torchvision issue
+        from transformers.models.gemma4.image_processing_gemma4 import Gemma4ImageProcessor
+        self.image_processor = Gemma4ImageProcessor(max_soft_tokens=max_soft_tokens)
+        self.max_soft_tokens = max_soft_tokens
 
-        llm_dim = self.llm.config.text_config.hidden_size
-        vision_dim = self.vision_backbone.embed_dim        # dinosiglip: DINO + SigLIP concat
+        # num_vision_tokens を実測で決める (224x224 dummy で processor に聞く)
+        # 実測: max_soft_tokens=70→64, 140→121, 280→256
+        _dummy = torch.rand(3, 224, 224) * 255
+        _out = self.image_processor.preprocess(_dummy, return_tensors="pt")
+        self.num_vision_tokens: int = int(_out["num_soft_tokens_per_image"][0])
 
-        self.vision_projector = VisionProjector(
-            vision_dim=vision_dim,
-            llm_dim=llm_dim,
-            initial_projection_dim=initial_projection_dim,
-        )
+        llm_dim = self.llm.config.text_config.hidden_size   # Gemma 4 E2B = 1536
+
         self.proprio_projector = ProprioProjector(proprio_dim=proprio_dim, llm_dim=llm_dim)
 
         self.action_queries = nn.Embedding(NUM_ACTION_TOKENS, llm_dim)
@@ -139,7 +126,7 @@ class VLAAdapterGemma4(nn.Module):
             input_dim=llm_dim,
             hidden_dim=llm_dim,
             action_dim=action_dim,
-            num_task_tokens=NUM_VISION_TOKENS,
+            num_task_tokens=self.num_vision_tokens,
             use_pro_version=True,
         )
 
@@ -165,12 +152,39 @@ class VLAAdapterGemma4(nn.Module):
         return self.llm.config.text_config.hidden_size
 
     @property
-    def vision_dim(self) -> int:
-        return self.vision_backbone.embed_dim
-
-    @property
     def text_model(self):
         return self.llm.model.language_model
+
+    # -----------------------------------------------------------------
+    # Vision encoding (Task 6 rev 3)
+    # -----------------------------------------------------------------
+    def encode_scene(self, scene_images) -> torch.Tensor:
+        """Gemma 4 native vision で scene image → (B, num_vision_tokens, llm_dim).
+
+        Args:
+            scene_images: PIL images / numpy / torch tensor.
+                tensor の場合は (B, 3, H, W) で [0, 255] float か uint8。
+                processor が内部で aspect-ratio-preserving resize + patchify + rescale(÷255) を行う。
+
+        Returns:
+            h_v: (B, num_vision_tokens, llm_dim) reshaped pooled tokens.
+        """
+        device = self.llm.device
+        dtype = self.llm.dtype  # bfloat16
+
+        out = self.image_processor.preprocess(scene_images, return_tensors="pt")
+        pv = out["pixel_values"].to(device, dtype=dtype)             # (B, max_patches, 768)
+        pi = out["image_position_ids"].to(device)                    # (B, max_patches, 2)
+        B = pv.shape[0]
+
+        feats = self.llm.model.get_image_features(pv, pi)
+        # feats.pooler_output: (N_valid_total, 1536) padding-stripped flat
+
+        n = self.num_vision_tokens
+        assert feats.pooler_output.shape[0] == B * n, \
+            f"pooler_output flat length {feats.pooler_output.shape[0]} != B*n = {B}*{n}"
+        h_v = feats.pooler_output.view(B, n, -1)
+        return h_v
 
     # -----------------------------------------------------------------
     # Forward
@@ -191,10 +205,9 @@ class VLAAdapterGemma4(nn.Module):
         use_soft_prompt = (self.soft_prompt_library is not None) and (dataset_id is not None)
         num_sp = self.num_soft_prompt_tokens if use_soft_prompt else 0
 
-        # ---- Vision features ----
-        # vision_backbone is frozen + eval, 活性化の勾配は不要 (projector の input として使用のみ)
-        vision_features = self.vision_backbone(pixel_values)           # (B, 512, vision_dim)
-        vision_projected = self.vision_projector(vision_features)       # (B, 512, llm_dim)
+        # ---- Vision features (Task 6: Gemma 4 native; scene only. wrist は Task 8 で扱う) ----
+        scene_imgs = pixel_values["scene"] if isinstance(pixel_values, dict) else pixel_values
+        vision_projected = self.encode_scene(scene_imgs)                # (B, num_vision_tokens, llm_dim)
 
         # ---- PLE 事前計算 (OOM 回避) ----
         with torch.no_grad():
@@ -207,7 +220,7 @@ class VLAAdapterGemma4(nn.Module):
             input_ids < ACTION_TOKEN_BEGIN_IDX + NUM_ACTION_TOKENS
         )
         vmask = (input_ids >= VISION_PLACEHOLDER_BEGIN_IDX) & (
-            input_ids < VISION_PLACEHOLDER_BEGIN_IDX + NUM_VISION_TOKENS
+            input_ids < VISION_PLACEHOLDER_BEGIN_IDX + self.num_vision_tokens
         )
         for b in range(B):
             apos = amask[b].nonzero(as_tuple=True)[0]
@@ -251,9 +264,9 @@ class VLAAdapterGemma4(nn.Module):
         apos0 = amask[0].nonzero(as_tuple=True)[0] + num_sp   # original position を extended space に shift
         vpos0 = vmask[0].nonzero(as_tuple=True)[0] + num_sp
 
-        vision_hidden = self.feature_norm(hidden_subset[:, :, vpos0, :])  # (B, 25, 512, llm_dim)
+        vision_hidden = self.feature_norm(hidden_subset[:, :, vpos0, :])  # (B, 25, num_vision_tokens, llm_dim)
         action_hidden = self.feature_norm(hidden_subset[:, :, apos0, :])  # (B, 25, 64, llm_dim)
-        combined = torch.cat([vision_hidden, action_hidden], dim=2)       # (B, 25, 576, llm_dim)
+        combined = torch.cat([vision_hidden, action_hidden], dim=2)       # (B, 25, N_v+64, llm_dim)
 
         predicted = self.action_head.predict_action(
             actions_hidden_states=combined,

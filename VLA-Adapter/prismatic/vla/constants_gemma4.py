@@ -26,12 +26,15 @@ ACTION_TOKEN_BEGIN_IDX = 258885
 NUM_ACTION_TOKENS      = 64                # Action query 個数 (= VLA-Adapter §2.3 の慣例)
 
 # Vision placeholder ID range: 258949 〜 259460 (連続 512 個、全て <unusedX>).
-# LIBERO は 2 カメラ (agentview + wrist) × 256 patches = 512 tokens。
 # Action range (258885-258948) の直後に連続して確保。
 # tokenizer での検証済み: 258949=<unused3032>, 259460=<unused3543>、全て <unusedXXXX> パターン。
 VISION_PLACEHOLDER_BEGIN_IDX = 258949
-NUM_VISION_TOKENS            = 512         # 2 cam × 256 patches
-NUM_VISION_PLACEHOLDERS      = NUM_VISION_TOKENS  # backward-compat alias
+# DEPRECATED (Task 6 rev 3): max_soft_tokens が YAML で可変 (default 280 → 256 tokens) になったため、
+# constant で固定値を持つのをやめた。参照側 (action_head, bridge attn, vmask など) は
+# VLAAdapterGemma4.num_vision_tokens 属性経由で実測値を使う。
+# None trap: 誤って算術や比較に使えば即 TypeError で気付ける。
+NUM_VISION_TOKENS            = None
+NUM_VISION_PLACEHOLDERS      = None  # backward-compat alias
 
 # Proprio placeholder ID (1 個)。vision placeholder range の直後。
 PROPRIO_PLACEHOLDER_IDX = 259461
