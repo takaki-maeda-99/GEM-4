@@ -92,8 +92,15 @@ class VLAAdapterGemma4(nn.Module):
         # num_pretrain_datasets=0 (default) で soft_prompt 無効化、Stage 1-2 と backward compatible
         num_pretrain_datasets: int = 0,
         num_soft_prompt_tokens: int = 32,
+        # --- Dual-Track (Task 11): "quality" | "speed" ---
+        #   quality: action_queries trainable + LLM grad 流れる (GC/LoRA 併用前提、finetune side)
+        #   speed:   action_queries frozen (zero init)、forward 内で LLM を torch.no_grad() で wrap
+        training_mode: str = "quality",
     ):
         super().__init__()
+        assert training_mode in ("quality", "speed"), \
+            f"training_mode must be 'quality' or 'speed', got {training_mode!r}"
+        self.training_mode = training_mode
         self.llm = gemma_model
         self.llm.config.use_cache = True                    # G1 対策
         assert not getattr(self.llm, "is_gradient_checkpointing", False), \
@@ -265,14 +272,29 @@ class VLAAdapterGemma4(nn.Module):
         position_ids = torch.arange(L_total, dtype=torch.long, device=device).unsqueeze(0).expand(B, -1)
 
         # ---- LLM forward (Gemma4TextModel 直接) ----
-        out = llm(
-            inputs_embeds=embeddings,
-            per_layer_inputs=per_layer_inputs,
-            use_cache=True,
-            output_hidden_states=True,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-        )
+        # Dual-Track Task 11:
+        #   speed mode は LLM call を torch.no_grad() で wrap (autograd graph 作らず、
+        #   activation 保存せず、backward 不可)。out.hidden_states は detached で返る。
+        #   quality mode は従来通り grad 流す (finetune 側で GC 有効化想定)。
+        if self.training_mode == "speed":
+            with torch.no_grad():
+                out = llm(
+                    inputs_embeds=embeddings,
+                    per_layer_inputs=per_layer_inputs,
+                    use_cache=True,
+                    output_hidden_states=True,
+                    attention_mask=attention_mask,
+                    position_ids=position_ids,
+                )
+        else:  # quality
+            out = llm(
+                inputs_embeds=embeddings,
+                per_layer_inputs=per_layer_inputs,
+                use_cache=True,
+                output_hidden_states=True,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+            )
 
         # ---- Action head input 組み立て (entries 0-24) ----
         all_hidden = torch.stack(out.hidden_states, dim=1)              # (B, 36, L_total, llm_dim)

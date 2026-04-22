@@ -270,6 +270,7 @@ def build_model(cfg: FinetuneConfig, device: torch.device) -> tuple[VLAAdapterGe
         num_action_chunks=cfg.num_action_chunks,
         num_pretrain_datasets=cfg.num_pretrain_datasets,   # Stage 3: 0 で disable、>=1 で SoftPromptLibrary 構築
         num_soft_prompt_tokens=cfg.num_soft_prompt_tokens,
+        training_mode=cfg.training_mode,                   # Dual-Track (Task 11): "quality" | "speed"
     ).to(device, dtype=torch.bfloat16)
     model_vla.train()
 
@@ -283,8 +284,12 @@ def build_model(cfg: FinetuneConfig, device: torch.device) -> tuple[VLAAdapterGe
         model_vla.llm.model.language_model.gradient_checkpointing_enable()
         print("[mode-A] action_queries trainable; LLM GC enabled")
     elif cfg.training_mode == "speed":
-        # Mode B: Task 11 で実装
-        print("[mode-B] (placeholder, Task 11 で実装)")
+        # Mode B: action_queries frozen (zero init + requires_grad=False),
+        # LLM forward wrapped in torch.no_grad() (done inside VLAAdapterGemma4.forward).
+        # No GC, no LoRA.
+        model_vla.action_queries.weight.data.zero_()
+        model_vla.action_queries.weight.requires_grad = False
+        print("[mode-B] action_queries frozen (zero init); LLM no_grad wrap active; no GC; no LoRA")
 
     total_trainable = sum(p.numel() for p in model_vla.parameters() if p.requires_grad) / 1e6
     # Soft Prompt 有効化時は trainable 数 +num_datasets × 32 × 1536 × 4 byte / 1M param 上乗せ許容
