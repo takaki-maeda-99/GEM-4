@@ -165,6 +165,13 @@ class FinetuneConfig:
     max_soft_tokens: int = 280                 # ∈ {70, 140, 280, 560, 1120}、default 280 (pretrain natural)
                                                # Gemma4ImageProcessor に渡り、vision patch/soft token 数を決定
 
+    # --- Scene vision backbone ablation (2026-04-22) ---
+    # "gemma4_native" (default): Gemma 4 純正 vision_tower + embed_vision
+    # "dinosiglip":              DinoV2-L + SigLIP-So400m concat + VisionProjector (pre-Task-6 wrapper を復活)
+    # 両 branch で loader 変更不要 (scene は (B, 3, 224, 224) float [0,255])。DinoSigLIP path は
+    # encode_scene 内で PIL 変換を経由するため CPU bound、速度比較では overhead を含む点に注意。
+    vision_backbone_type: str = "gemma4_native"
+
     # --- Dual-Track (Task 9) ---
     # 後続 task (10-12) で action_queries / GC / LoRA / torch.no_grad wrap が
     # この flag から分岐する。Task 9 は flag 定義のみ、logic は未配線。
@@ -277,6 +284,7 @@ def build_model(cfg: FinetuneConfig, device: torch.device) -> tuple[VLAAdapterGe
         num_pretrain_datasets=cfg.num_pretrain_datasets,   # Stage 3: 0 で disable、>=1 で SoftPromptLibrary 構築
         num_soft_prompt_tokens=cfg.num_soft_prompt_tokens,
         training_mode=cfg.training_mode,                   # Dual-Track (Task 11): "quality" | "speed"
+        vision_backbone_type=cfg.vision_backbone_type,     # Ablation (2026-04-22): "gemma4_native" | "dinosiglip"
     ).to(device, dtype=torch.bfloat16)
     model_vla.train()
 
@@ -410,6 +418,12 @@ def build_param_groups(model, cfg: FinetuneConfig) -> list:
     _collect(model.proprio_projector, "proprio_projector", base_lr)
     _collect(model.action_head, "action_head", base_lr)
 
+    # --- DinoSigLIP ablation path (2026-04-22): vision_projector が random init で存在 ---
+    # gemma4_native path では model.vision_projector is None (collect は no-op)。
+    # dinosiglip path では VisionProjector(2176→8192→1536→1536) が trainable。
+    # wrist_encoder と同様 Phase 1 では freeze、Phase 2 で warmup、Phase 3 で active 運用。
+    _collect(getattr(model, "vision_projector", None), "vision_projector", base_lr)
+
     # action_queries: Mode A は trainable、Mode B は frozen (build_model で requires_grad=False)
     if model.action_queries.weight.requires_grad:
         groups.append({
@@ -489,10 +503,11 @@ def update_pretrain_lrs(optimizer: AdamW, step: int, cfg: FinetuneConfig) -> dic
         "action_queries":      base_lr,          # Mode A のみ optimizer に存在
         "soft_prompt_library": base_lr * coef,   # X-VLA soft_prompts (coef 適用)
         "lora":                base_lr,          # Mode A のみ
+        "vision_projector":    base_lr,          # DinoSigLIP ablation path のみ optimizer に存在
     }
-    # freeze 中 LR=0 にする group: wrist_encoder (random init の新規 vision-side module)
+    # freeze 中 LR=0 にする group: random init の新規 vision-side module (wrist_encoder, vision_projector)
     # Gemma4 native vision (scene tower) は frozen なので対象外。
-    FROZEN_PHASE1 = {"wrist_encoder"}
+    FROZEN_PHASE1 = {"wrist_encoder", "vision_projector"}
     current = {}
     for g in optimizer.param_groups:
         name = g["name"]

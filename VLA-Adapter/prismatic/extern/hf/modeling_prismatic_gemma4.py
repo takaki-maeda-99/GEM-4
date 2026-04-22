@@ -77,6 +77,25 @@ class ProprioProjector(nn.Module):
         return self.fc2(self.act(self.fc1(x)))
 
 
+class VisionProjector(nn.Module):
+    """Ablation only (DinoSigLIP path): 3 層 MLP vision_dim → initial_projection_dim → llm_dim → llm_dim.
+
+    Task 6 で VLAAdapterGemma4 から取り除いた pre-Task-6 実装を復活させたもの。
+    vision_backbone_type="dinosiglip" のとき、DinoSigLIPViTBackbone (2176-dim concat) の
+    patch 出力を Gemma4 LLM hidden size へ射影するために使う。
+    """
+
+    def __init__(self, vision_dim: int, llm_dim: int, initial_projection_dim: int = 8192):
+        super().__init__()
+        self.fc1 = nn.Linear(vision_dim, initial_projection_dim, bias=True)
+        self.fc2 = nn.Linear(initial_projection_dim, llm_dim, bias=True)
+        self.fc3 = nn.Linear(llm_dim, llm_dim, bias=True)
+        self.act = nn.GELU()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.fc3(self.act(self.fc2(self.act(self.fc1(x)))))
+
+
 class VLAAdapterGemma4(nn.Module):
     """Gemma 4 E2B backbone + VLA-Adapter 設計 の統合モデル (Stage 1)."""
 
@@ -96,11 +115,21 @@ class VLAAdapterGemma4(nn.Module):
         #   quality: action_queries trainable + LLM grad 流れる (GC/LoRA 併用前提、finetune side)
         #   speed:   action_queries frozen (zero init)、forward 内で LLM を torch.no_grad() で wrap
         training_mode: str = "quality",
+        # --- Scene vision backbone ablation (2026-04-22): "gemma4_native" | "dinosiglip" ---
+        # gemma4_native: Gemma 4 純正 vision_tower + embed_vision (Task 6 以降の default)
+        # dinosiglip:    Pre-Task-6 の DinoV2-L + SigLIP-So400m concat + VisionProjector 経路
+        vision_backbone_type: str = "gemma4_native",
+        dinosiglip_backbone_id: str = "dinosiglip-vit-so-224px",
+        dinosiglip_resize_strategy: str = "resize-naive",
+        dinosiglip_image_size: int = 224,
     ):
         super().__init__()
         assert training_mode in ("quality", "speed"), \
             f"training_mode must be 'quality' or 'speed', got {training_mode!r}"
+        assert vision_backbone_type in ("gemma4_native", "dinosiglip"), \
+            f"vision_backbone_type must be 'gemma4_native' or 'dinosiglip', got {vision_backbone_type!r}"
         self.training_mode = training_mode
+        self.vision_backbone_type = vision_backbone_type
         self.llm = gemma_model
         self.llm.config.use_cache = True                    # G1 対策
         assert not getattr(self.llm, "is_gradient_checkpointing", False), \
@@ -109,18 +138,52 @@ class VLAAdapterGemma4(nn.Module):
         for p in self.llm.parameters():
             p.requires_grad = False
 
-        # --- Gemma 4 native vision preprocessor ---
-        # Gemma4ImageProcessor は aspect-ratio-preserving resize + patchify + position_ids 生成を担う。
-        self.image_processor = Gemma4ImageProcessor(max_soft_tokens=max_soft_tokens)
-        self.max_soft_tokens = max_soft_tokens   # retained for introspection / logging (__repr__)
-
-        # num_vision_tokens を実測で決める (224x224 dummy で processor に聞く)
-        # 実測: max_soft_tokens=70→64, 140→121, 280→256
-        _dummy = torch.zeros(3, 224, 224)   # content irrelevant, only shape matters; avoids RNG contamination
-        _out = self.image_processor.preprocess(_dummy, return_tensors="pt")
-        self.num_vision_tokens: int = int(_out["num_soft_tokens_per_image"][0])
-
         llm_dim = self.llm.config.text_config.hidden_size   # Gemma 4 E2B = 1536
+
+        # --- Scene vision branch (2 modes) ---
+        if vision_backbone_type == "gemma4_native":
+            # Gemma4ImageProcessor は aspect-ratio-preserving resize + patchify + position_ids 生成を担う。
+            self.image_processor = Gemma4ImageProcessor(max_soft_tokens=max_soft_tokens)
+            self.max_soft_tokens = max_soft_tokens   # retained for introspection / logging (__repr__)
+
+            # num_vision_tokens を実測で決める (224x224 dummy で processor に聞く)
+            # 実測: max_soft_tokens=70→64, 140→121, 280→256
+            _dummy = torch.zeros(3, 224, 224)   # content irrelevant, only shape matters; avoids RNG contamination
+            _out = self.image_processor.preprocess(_dummy, return_tensors="pt")
+            self.num_vision_tokens: int = int(_out["num_soft_tokens_per_image"][0])
+            # 以下の属性は dinosiglip path では使われない
+            self.vision_backbone = None
+            self.vision_projector = None
+        else:  # "dinosiglip"
+            # Ablation path: Pre-Task-6 wrapper を復活 (VisionProjector + DinoSigLIPViTBackbone)。
+            # ※ Gemma 4 native image_processor は構築しない (scene は DinoSigLIP 経路)。
+            #   ただし loader は同一 (scene は (B, 3, 224, 224) float [0,255])、encode_scene 内部で
+            #   PIL 経由で DinoSigLIP image_transform を適用する。
+            from prismatic.models.backbones.vision.dinosiglip_vit import DinoSigLIPViTBackbone
+            self.image_processor = None
+            self.max_soft_tokens = None
+            self.vision_backbone = DinoSigLIPViTBackbone(
+                vision_backbone_id=dinosiglip_backbone_id,
+                image_resize_strategy=dinosiglip_resize_strategy,
+                default_image_size=dinosiglip_image_size,
+                image_sequence_len=1,   # scene のみ (wrist は ResNet18 別経路)
+            )
+            # freeze + eval (BN など無いが dropout 念のため)
+            for p in self.vision_backbone.parameters():
+                p.requires_grad = False
+            self.vision_backbone.eval()
+            vision_embed_dim = self.vision_backbone.embed_dim   # DINO (1024) + SigLIP (1152) = 2176
+            self.vision_projector = VisionProjector(
+                vision_dim=vision_embed_dim,
+                llm_dim=llm_dim,
+                initial_projection_dim=8192,
+            )
+            # DinoSigLIP at 224 / patch14 → 16×16 = 256 patches (image_sequence_len=1)
+            self.num_vision_tokens: int = int(self.vision_backbone.num_patches)
+            assert self.num_vision_tokens == 256, (
+                f"DinoSigLIP-vit-so-224px expected 256 patches, got {self.num_vision_tokens}. "
+                "loader (NUM_VISION_TOKENS=256) と不整合。"
+            )
 
         self.proprio_projector = ProprioProjector(proprio_dim=proprio_dim, llm_dim=llm_dim)
 
@@ -157,10 +220,12 @@ class VLAAdapterGemma4(nn.Module):
 
         # --- Trainable param count (Task 8: wrist_encoder ~12M added) ---
         # 実測: ~541 M (ActionHead ~528M + ProprioProjector + action_queries + WristResNet18 + SoftPromptLibrary)
-        # 幅広の sanity range (500-620 M) に留め、exact な 577M 仮説には tie しない。
+        # DinoSigLIP ablation path では VisionProjector (~32M) が加わり ~573M になる。
+        # 幅広の sanity range (500-660 M) に留め、exact な 577M 仮説には tie しない。
         total_trainable = sum(p.numel() for p in self.parameters() if p.requires_grad) / 1e6
-        print(f"[VLAAdapterGemma4] trainable params: {total_trainable:.3f} M")
-        assert 500.0 < total_trainable < 620.0, \
+        print(f"[VLAAdapterGemma4] trainable params: {total_trainable:.3f} M "
+              f"(vision_backbone_type={self.vision_backbone_type})")
+        assert 500.0 < total_trainable < 660.0, \
             f"trainable params out of expected range: got {total_trainable:.3f} M (expected ~541M baseline)"
 
     # -----------------------------------------------------------------
@@ -175,9 +240,23 @@ class VLAAdapterGemma4(nn.Module):
         return self.llm.model.language_model
 
     # -----------------------------------------------------------------
-    # Vision encoding (Task 6 rev 3)
+    # Vision encoding (Task 6 rev 3 / 2026-04-22 DinoSigLIP ablation)
     # -----------------------------------------------------------------
     def encode_scene(self, scene_images) -> torch.Tensor:
+        """scene image → (B, num_vision_tokens, llm_dim).
+
+        vision_backbone_type に応じて 2 経路を分岐:
+          - "gemma4_native": Gemma4ImageProcessor → vision_tower → embed_vision (Task 6 default)
+          - "dinosiglip":    DinoSigLIPViTBackbone (DINO+SigLIP concat) → VisionProjector
+        """
+        if self.vision_backbone_type == "gemma4_native":
+            return self._encode_scene_gemma4_native(scene_images)
+        elif self.vision_backbone_type == "dinosiglip":
+            return self._encode_scene_dinosiglip(scene_images)
+        else:  # pragma: no cover (guarded in __init__)
+            raise ValueError(f"unknown vision_backbone_type={self.vision_backbone_type!r}")
+
+    def _encode_scene_gemma4_native(self, scene_images) -> torch.Tensor:
         """Gemma 4 native vision で scene image → (B, num_vision_tokens, llm_dim).
 
         Args:
@@ -209,6 +288,57 @@ class VLAAdapterGemma4(nn.Module):
         assert feats.pooler_output.shape[0] == B * n, \
             f"pooler_output flat length {feats.pooler_output.shape[0]} != B*n = {B}*{n}"
         h_v = feats.pooler_output.view(B, n, -1)
+        return h_v
+
+    def _dinosiglip_transform_batch(self, scene_images: torch.Tensor) -> Dict[str, torch.Tensor]:
+        """(B, 3, H, W) float [0,255] / uint8 tensor → {"dino": (B,3,224,224), "siglip": (B,3,224,224)}.
+
+        DinoSigLIP の image_transform は PIL Image を要求するため、一度 CPU uint8 PIL に落として
+        dino/siglip の 2 transform を適用 → stack で GPU (bf16) に戻す。
+        CPU bound なので batch 数が大きいと bottleneck になり得る。User 承知済 (ablation 比較用の
+        scene-encoder isolate 目的、速度比較は「PIL 変換 overhead 含む」と明記)。
+        """
+        from PIL import Image as PILImage
+
+        # tensor を CPU uint8 にする (元が float なら clamp + cast)
+        if scene_images.is_floating_point():
+            scene_cpu = scene_images.detach().float().clamp(0, 255).to("cpu", dtype=torch.uint8)
+        else:
+            scene_cpu = scene_images.detach().to("cpu", dtype=torch.uint8)
+
+        dino_list, siglip_list = [], []
+        for i in range(scene_cpu.shape[0]):
+            arr = scene_cpu[i].permute(1, 2, 0).numpy()   # (H, W, 3) uint8
+            pil = PILImage.fromarray(arr)
+            d = self.vision_backbone.image_transform(pil)  # {"dino": tensor, "siglip": tensor}
+            dino_list.append(d["dino"])
+            siglip_list.append(d["siglip"])
+
+        device = self.llm.device
+        dtype = self.llm.dtype   # bfloat16
+        pv = {
+            "dino":   torch.stack(dino_list, dim=0).to(device=device, dtype=dtype),
+            "siglip": torch.stack(siglip_list, dim=0).to(device=device, dtype=dtype),
+        }
+        return pv
+
+    def _encode_scene_dinosiglip(self, scene_images: torch.Tensor) -> torch.Tensor:
+        """DinoSigLIP ablation path.
+
+        Args:
+            scene_images: (B, 3, H, W) float [0,255] or uint8 tensor (loader 出力そのまま)。
+
+        Returns:
+            h_v: (B, 256, llm_dim) projected tokens. DinoSigLIP backbone は frozen、VisionProjector のみ train.
+        """
+        pv = self._dinosiglip_transform_batch(scene_images)
+
+        # DinoSigLIP backbone は frozen + eval。grad も autograd graph も不要 (projector のみ trainable)。
+        with torch.no_grad():
+            vision_features = self.vision_backbone(pv)    # (B, 256, 2176) bf16
+
+        # VisionProjector は trainable、grad 流す。
+        h_v = self.vision_projector(vision_features)       # (B, 256, llm_dim)
         return h_v
 
     # -----------------------------------------------------------------
