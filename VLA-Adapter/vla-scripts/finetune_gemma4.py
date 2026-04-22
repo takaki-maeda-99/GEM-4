@@ -53,7 +53,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
@@ -156,6 +156,15 @@ class FinetuneConfig:
     optim_fused: bool = False                  # T1: AdamW(fused=True)、期待 5-15% forward+backward overhead 削減
     attn_implementation: str = "sdpa"          # sdpa: torch 2.11 native SDPA (Flash backend 組込); flash-attn 2.x は torch2.11 用 wheel なし
 
+    # --- Dual-Track (Task 9) ---
+    # 後続 task (10-12) で action_queries / GC / LoRA / torch.no_grad wrap が
+    # この flag から分岐する。Task 9 は flag 定義のみ、logic は未配線。
+    training_mode: str = "quality"             # "quality" (Mode A: action_queries trainable + GC + LoRA)
+                                               #  | "speed"  (Mode B: action_queries frozen + LLM no_grad, no LoRA)
+    lora_r: int = 16                           # Mode A: LoRA rank
+    lora_alpha: int = 32                       # Mode A: LoRA alpha
+    lora_target_modules: Tuple[str, ...] = ("q_proj", "k_proj", "v_proj", "o_proj")
+
     # --- Smoke mode (Phase 2b) ---
     smoke_mode: bool = False                  # True: max_steps=100, save@50, resume check on
     smoke_max_steps: int = 100
@@ -184,6 +193,11 @@ class FinetuneConfig:
     # 5/13 hard deadline (R19)、empty で disabled
     hard_stop_datetime: str = ""              # e.g. "2026-05-13 00:00:00"
     # fmt: on
+
+    def __post_init__(self):
+        # Dual-Track (Task 9): training_mode validation
+        assert self.training_mode in ("quality", "speed"), \
+            f"training_mode must be 'quality' or 'speed', got {self.training_mode!r}"
 
 
 def build_run_id(cfg: FinetuneConfig) -> str:
@@ -657,6 +671,7 @@ def finetune(cfg: FinetuneConfig) -> None:
     rprint(f"[finetune_gemma4] device:        {device} ({torch.cuda.get_device_name(local_rank)})")
     rprint(f"[finetune_gemma4] ddp_mode:      {cfg.ddp_mode}  (world_size={world_size}, rank={global_rank}, local_rank={local_rank})")
     rprint(f"[finetune_gemma4] smoke_mode:    {cfg.smoke_mode}")
+    rprint(f"[dual-track] training_mode = {cfg.training_mode}")
     rprint(f"[finetune_gemma4] max_steps:     {cfg.max_steps}")
     rprint(f"[finetune_gemma4] warmup_steps:  {cfg.lr_warmup_steps}")
     rprint(f"[finetune_gemma4] lr:            {cfg.learning_rate}")
