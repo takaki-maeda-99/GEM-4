@@ -211,9 +211,9 @@ class VLAAdapterGemma4(nn.Module):
         device = input_ids.device
         llm = self.text_model
 
-        # Stage 3 Soft Prompt 配置 (案 B) 判定: library 構築済 AND dataset_id 渡された場合のみ active
+        # Stage 3 Soft Prompt 配置 (rev 3 Task 7): X-VLA 原実装に合わせ action head 入力に渡す。
+        # library 構築済 AND dataset_id 渡された場合のみ active。
         use_soft_prompt = (self.soft_prompt_library is not None) and (dataset_id is not None)
-        num_sp = self.num_soft_prompt_tokens if use_soft_prompt else 0
 
         # ---- Vision features (Task 6: Gemma 4 native; scene only. wrist は Task 8 で扱う) ----
         scene_imgs = pixel_values["scene"] if isinstance(pixel_values, dict) else pixel_values
@@ -238,21 +238,15 @@ class VLAAdapterGemma4(nn.Module):
             embeddings[b, apos] = self.action_queries.weight
             embeddings[b, vpos] = h_v[b]
 
-        # ---- Stage 3 (optional): Soft Prompt を inputs_embeds 前段に concat (案 B) ----
-        # X-VLA 原実装は action head 内 transformer で末尾 concat、本 plan §R21 は LLM 前段 (案 B) で deviation。
-        # migration_log 記録済。
+        # ---- Soft Prompt は action head 入力に回す (X-VLA 原実装準拠, rev 3 Task 7) ----
+        # LLM inputs_embeds への prepend (案 B deviation) は廃止。action head 側 predict_action に h_sp で渡す。
         if use_soft_prompt:
-            soft_prompts = self.soft_prompt_library(dataset_id)             # (B, num_sp, llm_dim)
-            embeddings = torch.cat([soft_prompts, embeddings], dim=1)        # (B, num_sp + L, llm_dim)
-            # per_layer_inputs は soft_prompt 位置には contribution なし → zero-pad (B, num_sp, num_layers, ple_dim)
-            zero_ple = torch.zeros(
-                B, num_sp, per_layer_inputs.size(2), per_layer_inputs.size(3),
-                device=per_layer_inputs.device, dtype=per_layer_inputs.dtype,
-            )
-            per_layer_inputs = torch.cat([zero_ple, per_layer_inputs], dim=1)  # (B, num_sp + L, 35, 256)
+            h_sp = self.soft_prompt_library(dataset_id)   # (B, num_soft_prompt_tokens, llm_dim)
+        else:
+            h_sp = None
 
-        # ---- attention_mask / position_ids (R6) — extended length L' = num_sp + L ----
-        L_total = num_sp + L
+        # ---- attention_mask / position_ids (R6) ----
+        L_total = L   # Soft Prompt 相当の offset はもう無い
         attention_mask = torch.ones(B, L_total, dtype=torch.long, device=device)
         position_ids = torch.arange(L_total, dtype=torch.long, device=device).unsqueeze(0).expand(B, -1)
 
@@ -270,9 +264,10 @@ class VLAAdapterGemma4(nn.Module):
         all_hidden = torch.stack(out.hidden_states, dim=1)              # (B, 36, L_total, llm_dim)
         hidden_subset = all_hidden[:, :25, :, :]                        # (B, 25, L_total, llm_dim)
 
-        # batch 内で placeholder 位置は共通と仮定 (LIBERO は固定 layout)、Soft Prompt あれば offset +num_sp
-        apos0 = amask[0].nonzero(as_tuple=True)[0] + num_sp   # original position を extended space に shift
-        vpos0 = vmask[0].nonzero(as_tuple=True)[0] + num_sp
+        # batch 内で placeholder 位置は共通と仮定 (LIBERO は固定 layout)。
+        # Soft Prompt を LLM 入力に concat しなくなったため offset 加算は不要 (rev 3 Task 7)。
+        apos0 = amask[0].nonzero(as_tuple=True)[0]
+        vpos0 = vmask[0].nonzero(as_tuple=True)[0]
 
         vision_hidden = self.feature_norm(hidden_subset[:, :, vpos0, :])  # (B, 25, num_vision_tokens, llm_dim)
         action_hidden = self.feature_norm(hidden_subset[:, :, apos0, :])  # (B, 25, 64, llm_dim)
@@ -283,6 +278,8 @@ class VLAAdapterGemma4(nn.Module):
             proprio=proprio,
             proprio_projector=self.proprio_projector,
             phase="Training" if self.training else "Inference",
+            h_w=None,     # Task 8 で wrist feature を計算して差し替える
+            h_sp=h_sp,
         )
 
         if actions is None:
