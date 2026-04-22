@@ -21,6 +21,7 @@ VLA-Adapter/prismatic/*
 !VLA-Adapter/prismatic/vla/
 !VLA-Adapter/prismatic/models/
 VLA-Adapter/prismatic/models/*
+!VLA-Adapter/prismatic/models/action_heads.py
 !VLA-Adapter/prismatic/models/backbones/
 VLA-Adapter/prismatic/models/backbones/*
 !VLA-Adapter/prismatic/models/backbones/vision/
