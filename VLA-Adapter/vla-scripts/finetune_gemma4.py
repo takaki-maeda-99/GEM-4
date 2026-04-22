@@ -823,7 +823,8 @@ def finetune(cfg: FinetuneConfig) -> None:
     if cfg.pretrain_mode:
         rprint(f"  mode: Stage 3 Taco solo pretrain (Task 14)")
         # model.num_vision_tokens を loader に注入 (soft_tokens 対応): 64 (soft=70) / 121 (soft=140) / 256 (soft=280)
-        nvt = inner_model.num_vision_tokens
+        # Note: build_pretrain_dataloader は DDP wrap 前に呼ばれるため model_vla を直接参照 (inner_model はまだ未定義)
+        nvt = model_vla.num_vision_tokens
         rprint(f"  num_vision_tokens (from model): {nvt}")
         loader = build_pretrain_dataloader(cfg, tok, num_vision_tokens=nvt)
     else:
