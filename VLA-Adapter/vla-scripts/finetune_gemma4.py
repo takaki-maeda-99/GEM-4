@@ -340,19 +340,38 @@ def build_model(cfg: FinetuneConfig, device: torch.device) -> tuple[VLAAdapterGe
     return model_vla, tok
 
 
-def build_dataloader(cfg: FinetuneConfig, tok) -> DataLoader:
-    # FIXME (Task 14): 本 path は LIBERO / 単一 OXE の Stage 2 finetune 用。
-    # Task 6 で VLAAdapterGemma4 は Gemma 4 native vision に切替わり、
-    # pixel_values dict schema は {"scene", "wrist"} に変わった。
-    # 一方 Gemma4BatchTransform (test_08_data_pipeline.py) は旧 DinoSigLIP {"dino","siglip"}
-    # schema のままで、vision_backbone.image_transform を要求する。
-    # LIBERO migration は Task 14 スコープ外、本関数呼出しは現状 runtime error となる。
-    # 別 task (LIBERO loader migration) で Gemma4BatchTransform を native vision schema に
-    # 更新する必要あり。当面 pretrain_mode=True (build_pretrain_dataloader) 経由での使用のみ想定。
-    raise NotImplementedError(
-        "build_dataloader (LIBERO / Stage 2 single-dataset path) は Task 14 以降、"
-        "Gemma4BatchTransform の native vision 対応移行が未完了のため disabled。"
-        "pretrain_mode=True (Taco solo) で使用してください。"
+def build_dataloader(cfg: FinetuneConfig, tok, num_vision_tokens: int = 256) -> DataLoader:
+    """Stage 2: LIBERO fine-tune dataloader (pretrain_mode=False path)。
+
+    Task 14 で NotImplementedError だった LIBERO path を本格実装:
+      scripts/gemma4/libero_loader.LiberoDataset + LiberoCollator を使い、VLAAdapterGemma4
+      新 vision schema ({"scene", "wrist"}) で batch を構築する。pretrain_mode=True
+      (Taco solo) と loader 設計を揃える (num_workers / persistent_workers / prefetch)。
+
+    Args:
+        num_vision_tokens: model.num_vision_tokens を渡して VISION placeholder 数を動的
+            合わせる (soft_tokens=70→64 / 140→121 / 280→256)。
+    """
+    sys.path.insert(0, str(REPO_ROOT / "scripts" / "gemma4"))
+    from libero_loader import LiberoDataset, collate_libero
+    dataset = LiberoDataset(
+        data_dir=str(REPO_ROOT / cfg.data_root_dir),
+        dataset_name=cfg.dataset_name,
+        num_actions_chunk=cfg.num_action_chunks,
+        shuffle_buffer_size=cfg.shuffle_buffer_size,
+        train=True,
+    )
+    # pretrain_num_workers を流用 (fine-tune でも同じ data pipeline 性質: RLDS が内部
+    # parallelism を持つため workers=0 が安全、必要なら YAML 側で pretrain_num_workers=0)。
+    num_workers = getattr(cfg, "pretrain_num_workers", 0)
+    return DataLoader(
+        dataset,
+        batch_size=cfg.batch_size,
+        sampler=None,
+        collate_fn=collate_libero(tok, num_vision_tokens=num_vision_tokens),
+        num_workers=num_workers,
+        persistent_workers=(num_workers > 0),
+        prefetch_factor=2 if num_workers > 0 else None,
     )
 
 
@@ -829,7 +848,11 @@ def finetune(cfg: FinetuneConfig) -> None:
         loader = build_pretrain_dataloader(cfg, tok, num_vision_tokens=nvt)
     else:
         rprint(f"  mode: Stage 2 single-dataset ({cfg.data_root_dir})")
-        loader = build_dataloader(cfg, tok)
+        # Task 14: LIBERO loader に num_vision_tokens を注入 (pretrain path と同 pattern)。
+        # model_vla.num_vision_tokens は max_soft_tokens 依存で動的 (64 / 121 / 256 等)。
+        nvt = model_vla.num_vision_tokens
+        rprint(f"  num_vision_tokens (from model): {nvt}")
+        loader = build_dataloader(cfg, tok, num_vision_tokens=nvt)
     rprint(f"  dataloader built in {time.time()-t0:.1f}s")
 
     # --- DDP wrap (R15): model_vla → DDP(model_vla)、frozen param は all-reduce 対象外 (requires_grad=False) ---
