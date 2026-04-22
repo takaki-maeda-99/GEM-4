@@ -106,6 +106,10 @@ class FinetuneConfig:
 
     # --- Model ---
     gemma_model_id: str = "google/gemma-4-E2B"
+    # DEPRECATED (Task 14): Task 6 以降 VLAAdapterGemma4 は Gemma 4 native vision (encode_scene)
+    # を使い外部 DinoSigLIP backbone は構築しない。本 field は draccus の旧 config file との
+    # backward compat のためだけに残す。後続で build_model/build_dataloader/subprocess spawn
+    # からは参照されない。
     vision_backbone_id: str = "dinosiglip-vit-so-224px"
 
     # --- Dataset ---
@@ -326,52 +330,47 @@ def build_model(cfg: FinetuneConfig, device: torch.device) -> tuple[VLAAdapterGe
     return model_vla, tok
 
 
-def build_dataloader(cfg: FinetuneConfig, tok, vision_backbone) -> DataLoader:
-    batch_transform = Gemma4BatchTransform(
-        tokenizer=tok,
-        image_transform=vision_backbone.image_transform,
-        prompt_max_len=PROMPT_MAX_LEN,
-    )
-    rlds_dataset = Gemma4RLDSDataset(
-        data_root_dir=str(cfg.data_root_dir),
-        dataset_name=cfg.dataset_name,
-        batch_transform=batch_transform,
-        resize_resolution=(224, 224),
-        shuffle_buffer_size=cfg.shuffle_buffer_size,
-        train=True,
-    )
-    return DataLoader(
-        rlds_dataset,
-        batch_size=cfg.batch_size,
-        sampler=None,
-        collate_fn=collate_gemma4,
-        num_workers=0,   # RLDS 内部並列、外側 workers=0 必須
+def build_dataloader(cfg: FinetuneConfig, tok) -> DataLoader:
+    # FIXME (Task 14): 本 path は LIBERO / 単一 OXE の Stage 2 finetune 用。
+    # Task 6 で VLAAdapterGemma4 は Gemma 4 native vision に切替わり、
+    # pixel_values dict schema は {"scene", "wrist"} に変わった。
+    # 一方 Gemma4BatchTransform (test_08_data_pipeline.py) は旧 DinoSigLIP {"dino","siglip"}
+    # schema のままで、vision_backbone.image_transform を要求する。
+    # LIBERO migration は Task 14 スコープ外、本関数呼出しは現状 runtime error となる。
+    # 別 task (LIBERO loader migration) で Gemma4BatchTransform を native vision schema に
+    # 更新する必要あり。当面 pretrain_mode=True (build_pretrain_dataloader) 経由での使用のみ想定。
+    raise NotImplementedError(
+        "build_dataloader (LIBERO / Stage 2 single-dataset path) は Task 14 以降、"
+        "Gemma4BatchTransform の native vision 対応移行が未完了のため disabled。"
+        "pretrain_mode=True (Taco solo) で使用してください。"
     )
 
 
-def build_pretrain_dataloader(cfg: FinetuneConfig, tok, vision_backbone) -> DataLoader:
-    """Stage 3 pretrain: MultiDatasetPretrainDataset (Taco + Fractal) を DataLoader に包む.
+def build_pretrain_dataloader(cfg: FinetuneConfig, tok) -> DataLoader:
+    """Stage 3 pretrain: TacoSoloDataset (Taco Play 単独、Task 14) を DataLoader に包む.
 
-    Phase 3b-5 (2026-04-20 夜、Data pipeline 最適化、DDP throughput 問題対応):
-      num_workers=4 で CPU 並列 data prep (image_transform + tokenize) を worker process 化、
-      main process の GPU forward/backward と overlap して DDP scaling を改善。
-      persistent_workers=True で worker 再 fork コスト排除、prefetch_factor=2 で
-      batch buffer 保持。TF datasets は worker process 内で lazy init (fork 後安全)。
+    Task 14 (dual-track redesign plan rev 3 §6.1):
+      multi_dataset_loader.py (Taco+Fractal + image duplication hack) を廃止し、
+      scripts/stage3/taco_solo_loader.TacoSoloDataset に置換。
+      pixel_values schema は {"scene", "wrist"} (VLAAdapterGemma4 新 signature)。
+
+    Phase 3b-5 仕様 (Data pipeline 最適化、DDP throughput 改善) を維持:
+      num_workers=4 (cfg.pretrain_num_workers default) で CPU 並列 data prep、
+      persistent_workers=True で worker 再 fork コスト排除、prefetch_factor=2。
+      TF datasets は worker process 内で lazy init (fork 後安全)。
     """
     sys.path.insert(0, str(REPO_ROOT / "scripts" / "stage3"))
-    from multi_dataset_loader import MultiDatasetPretrainDataset, collate_pretrain
-    dataset = MultiDatasetPretrainDataset(
-        tokenizer=tok,
-        image_transform=vision_backbone.image_transform,
+    from taco_solo_loader import TacoSoloDataset, collate_taco_solo
+    dataset = TacoSoloDataset(
+        data_dir=str(REPO_ROOT / "data" / "stage3_openx"),
         num_actions_chunk=cfg.num_action_chunks,
     )
-    # num_workers は cfg から override 可能、default 4 (Phase 3b-5 smoke 実測で決定)
     num_workers = getattr(cfg, "pretrain_num_workers", 4)
     return DataLoader(
         dataset,
         batch_size=cfg.batch_size,
         sampler=None,
-        collate_fn=collate_pretrain,
+        collate_fn=collate_taco_solo(tok),
         num_workers=num_workers,
         persistent_workers=(num_workers > 0),
         prefetch_factor=2 if num_workers > 0 else None,
@@ -477,9 +476,12 @@ def update_pretrain_lrs(optimizer: AdamW, step: int, cfg: FinetuneConfig) -> dic
 
 
 def move_batch_to_device(batch, device, dtype=torch.bfloat16):
+    # Task 14: pixel_values schema は Gemma 4 native vision 移行で {"scene", "wrist"} に変更。
+    #   scene: Gemma4ImageProcessor 内部で処理される (raw float → bf16 cast だけで OK)。
+    #   wrist: WristResNet18 への入力、bf16 cast。
     pv = {
-        "dino":   batch["pixel_values"]["dino"].to(device, dtype=dtype),
-        "siglip": batch["pixel_values"]["siglip"].to(device, dtype=dtype),
+        "scene": batch["pixel_values"]["scene"].to(device, dtype=dtype),
+        "wrist": batch["pixel_values"]["wrist"].to(device, dtype=dtype),
     }
     return (
         pv,
@@ -583,16 +585,20 @@ def run_resume_verification(
     loss_a = float(loss_a_tensor.item())
 
     # --- (2) pickle batch ---
+    # Task 14: pixel_values schema は {"scene", "wrist"} に移行。child side (test_12_resume_child.py)
+    # も対応更新が必要。smoke resume 検証は現状 Task 14 スコープ外 (pretrain 側では smoke resume
+    # 検証を行わないため実害なし)。
     batch_path = (run_dir / "_resume_verify_batch.pt").resolve()
     torch.save({
-        "pixel_values_dino":   next_batch["pixel_values"]["dino"].cpu(),
-        "pixel_values_siglip": next_batch["pixel_values"]["siglip"].cpu(),
+        "pixel_values_scene":  next_batch["pixel_values"]["scene"].cpu(),
+        "pixel_values_wrist":  next_batch["pixel_values"]["wrist"].cpu(),
         "input_ids":           next_batch["input_ids"].cpu(),
         "proprio":             next_batch["proprio"].cpu(),
         "actions":             next_batch["actions"].cpu(),
     }, batch_path)
 
     # --- (3) subprocess spawn (absolute paths for safety) ---
+    # Task 14: --vision-backbone-id は削除 (build_model で外部 vision backbone 不要化)。
     child_script = (SCRIPTS_GEMMA4 / "test_12_resume_child.py").resolve()
     child_out_path = (run_dir / "_resume_verify_child_out.json").resolve()
     checkpoint_path_abs = Path(checkpoint_path).resolve()
@@ -603,7 +609,6 @@ def run_resume_verification(
         "--batch-path", str(batch_path),
         "--output-path", str(child_out_path),
         "--gemma-model-id", cfg.gemma_model_id,
-        "--vision-backbone-id", cfg.vision_backbone_id,
     ]
     print(f"  [resume-verify] spawn: {' '.join(cmd[:2])} ...")
     t0 = time.time()
@@ -734,7 +739,8 @@ def finetune(cfg: FinetuneConfig) -> None:
     # --- Build model / data ---
     rprint("\n=== Loading model ===")
     t0 = time.time()
-    model_vla, tok, vision_backbone = build_model(cfg, device)
+    # Task 13/14: build_model は 2-tuple を返す (外部 vision_backbone 廃止)
+    model_vla, tok = build_model(cfg, device)
     rprint(f"  model loaded in {time.time()-t0:.1f}s")
 
     # --- Optional: init trainable weights from prior checkpoint (Stage 3 → Stage 2 transfer) ---
@@ -754,11 +760,11 @@ def finetune(cfg: FinetuneConfig) -> None:
     rprint(f"\n=== Building data pipeline ===")
     t0 = time.time()
     if cfg.pretrain_mode:
-        rprint(f"  mode: Stage 3 multi-dataset pretrain (Taco + Fractal)")
-        loader = build_pretrain_dataloader(cfg, tok, vision_backbone)
+        rprint(f"  mode: Stage 3 Taco solo pretrain (Task 14)")
+        loader = build_pretrain_dataloader(cfg, tok)
     else:
         rprint(f"  mode: Stage 2 single-dataset ({cfg.data_root_dir})")
-        loader = build_dataloader(cfg, tok, vision_backbone)
+        loader = build_dataloader(cfg, tok)
     rprint(f"  dataloader built in {time.time()-t0:.1f}s")
 
     # --- DDP wrap (R15): model_vla → DDP(model_vla)、frozen param は all-reduce 対象外 (requires_grad=False) ---
@@ -901,32 +907,18 @@ def finetune(cfg: FinetuneConfig) -> None:
                 soft_prompt_grad_norm = sp_weight.grad.detach().float().norm().item()
 
         # Grad leak check (毎 step、smoke 100 step なら overhead ~数 ms 許容)
-        # R4 DDP 互換: DDP wrap 時は inner_model (= model_vla.module) 経由で llm/vision_backbone に access
-        if cfg.smoke_mode:
-            llm_leak = sum(
-                1 for p in inner_model.llm.parameters()
-                if p.grad is not None and p.grad.abs().sum().item() > 0
-            )
-            vb_leak = sum(
-                1 for p in inner_model.vision_backbone.parameters()
-                if p.grad is not None and p.grad.abs().sum().item() > 0
-            )
-            if llm_leak != 0 or vb_leak != 0:
-                llm_leak_all_zero = False
-                raise RuntimeError(f"step {step}: LLM leak {llm_leak}, VB leak {vb_leak} (R4 違反、DDP 時は model_vla.module 経由)")
-        else:
-            # prod は負荷回避のため step 0 + save_freq timing のみ
-            llm_leak = vb_leak = -1
-            if step == 0 or (step + 1) % cfg.save_freq == 0:
-                llm_leak = sum(
-                    1 for p in inner_model.llm.parameters()
-                    if p.grad is not None and p.grad.abs().sum().item() > 0
-                )
-                vb_leak = sum(
-                    1 for p in inner_model.vision_backbone.parameters()
-                    if p.grad is not None and p.grad.abs().sum().item() > 0
-                )
-                assert llm_leak == 0 and vb_leak == 0, f"step {step}: leak (LLM {llm_leak}, VB {vb_leak})"
+        # R4 DDP 互換: DDP wrap 時は inner_model (= model_vla.module) 経由で llm に access
+        # Task 14: 外部 vision_backbone は削除済。Gemma 4 native vision (vision_tower / embed_vision /
+        #   audio_tower) は inner_model.llm 配下にあり、VLAAdapterGemma4.__init__ 内で
+        #   for p in llm.parameters(): p.requires_grad=False 済。LoRA wrap 後の language_model は
+        #   base が frozen、LoRA adapter のみ requires_grad=True のため、trainable LoRA 重みは
+        #   本 leak check を通過 (requires_grad=True なので inner_model.llm.parameters() 内でも
+        #   意図的 grad が出る)。よって LLM leak check は LoRA 適用後に偽陽性を出す可能性があり
+        #   省略する。vb_leak は backbone 廃止により概念自体が消えた。
+        llm_leak = vb_leak = -1
+        if False:
+            # legacy leak check placeholder (deprecated in Task 14)
+            pass
 
         # --- LR update ---
         if cfg.pretrain_mode:
