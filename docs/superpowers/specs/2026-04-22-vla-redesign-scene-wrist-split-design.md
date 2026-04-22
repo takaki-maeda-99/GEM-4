@@ -1,9 +1,18 @@
 # VLA Redesign: Scene / Wrist Path Split + Dual-Track (Quality vs Speed) Strategy
 
-**Status**: Draft — pending user review (revised for dual-track)
-**Date**: 2026-04-22 (revised 2026-04-22)
+**Status**: Draft — pending user review (rev 3: Gemma 4 vision API 実測反映)
+**Date**: 2026-04-22 (rev 1: initial → rev 2: dual-track → rev 3: Gemma 4 vision findings)
 **Target**: Hackathon 2026-05-18 (4 weeks)
 **Checkpoint disposition**: 60k step Stage 3c-0 checkpoint will be discarded, fresh pretrain from step 0
+
+**Rev 3 変更点 (2026-04-22)**:
+- `multi_modal_projector` → `embed_vision` (`Gemma4MultimodalEmbedder` = RMSNorm + Linear) に訂正
+- Vision 入力は raw 画像ではなく **patchified `(B, max_patches, 768)` + `pixel_position_ids (B, max_patches, 2)`**
+- Vision 出力は **padding-stripped flat `(N_valid_total, 1536)`**、バッチ reshape 要
+- `max_soft_tokens` supported 値: `{70, 140, 280, 560, 1120}` (`_SUPPORTED_SOFT_TOKENS` 実測)、default 280
+- Preprocess は `Gemma4ImageProcessor.preprocess()` を直接使用、`do_normalize=False`
+- `attn_implementation = "sdpa"` (torch 2.11 用 flash-attn 2.x wheel 存在せず、torch 2.11 native SDPA に Flash backend 組込あり)
+- venv は `.venv-gemma4` (torch 2.11.0, transformers 5.5.4, torchvision 0.26)
 
 ---
 
@@ -77,8 +86,8 @@
 
 | Module | 役割 | State | Params |
 |---|---|---|---|
-| `Gemma4VisionModel` | Scene 画像 → 140 or 280 soft tokens (768-dim) | **frozen** | ~151M |
-| `multi_modal_projector` (Gemma 4 内蔵) | vision hidden 768 → llm 1536 | **frozen** | 小 |
+| `Gemma4VisionModel` | Scene 画像 → N soft tokens (768-dim)、N は `max_soft_tokens` 設定で決定 | **frozen** | ~151M |
+| `embed_vision` (`Gemma4MultimodalEmbedder`, RMSNorm + Linear) | vision hidden 768 → llm 1536 | **frozen** | 小 |
 | `Gemma 4 LM` | multi-layer hidden 抽出 (Bridge 供給源) | **frozen** (params update なし) | ~2.0B |
 | `ResNet18` (new) | Wrist 画像 → 7×7×512 feature map | **trainable** (ImageNet init) | 11.7M |
 | `WristProjector` (new) | 512 → 1536 | **trainable** | 1.2M |
@@ -102,18 +111,34 @@ Mode 固有:
 ### 4.2 Data flow (両 Mode 共通)
 
 ```
-  scene_img (224×224×3)
+  scene_img (raw, any HxW)
         ▼
-  [Gemma4VisionModel (FROZEN)] ──▶ 140 or 280 soft tokens × 768
+  [Gemma4ImageProcessor.preprocess]
+    - aspect-ratio-preserving resize (target: max_soft_tokens 由来)
+    - rescale ÷255 (do_normalize=False、ImageNet mean/std は適用しない)
+    - patchify: 16×16 タイルで (B, 3, H, W) → (B, max_patches, 768)
+    - position_ids 生成 (B, max_patches, 2)、padding 箇所は (-1, -1)
         ▼
-  [multi_modal_projector (FROZEN)] ──▶ 140 or 280 tokens × 1536
-                                              │
-  text_tokens (20) ───────────────────────────┤
-  [Gemma 4 embed (FROZEN)]                    ├── concat ──▶ embeddings
-                                              │
-  action_placeholders (64 positions) ─────────┤
-  [action_queries (Mode A: trainable,         │
-                   Mode B: frozen)]            │
+  pixel_values (B, max_patches, 768)  + pixel_position_ids (B, max_patches, 2)
+        ▼
+  [Gemma4VisionModel (FROZEN)]      ──▶ vision hidden (padding-stripped flat)
+        ▼
+  [embed_vision (FROZEN)]           ──▶ pooler_output (N_valid_total, 1536)
+        ▼
+  reshape (B, N_valid_per_image, 1536)  # fixed input size なら batch 内で均一
+        ▼
+        │
+        │  N_valid_per_image は max_soft_tokens 設定次第:
+        │    max_soft_tokens=70:  N=64 tokens/image
+        │    max_soft_tokens=140: N=121 tokens/image
+        │    max_soft_tokens=280: N=256 tokens/image (default)
+        │                                              │
+  text_tokens (20) ───────────────────────────────────┤
+  [Gemma 4 embed (FROZEN)]                            ├── concat ──▶ embeddings
+                                                      │
+  action_placeholders (64 positions) ─────────────────┤
+  [action_queries (Mode A: trainable,                 │
+                   Mode B: frozen)]                   │
                                               ▼
                         ┌──────────────────────────────────────┐
                         │   Gemma 4 LM                         │
@@ -129,7 +154,8 @@ Mode 固有:
               ┌─────────────────────┴─────────────────────┐
               ▼                                           ▼
    h_t @ scene_vision positions               h_a @ action_placeholder positions
-     (B, 25, 140 or 280, 1536)                   (B, 25, 64, 1536)
+     (B, 25, N_valid_per_image, 1536)           (B, 25, 64, 1536)
+     (N = 64 / 121 / 256, max_soft_tokens 次第)
 
 
   wrist_img (224×224×3) ──▶ [ResNet18 (TRAINABLE)] ──▶ (B, 512, 7, 7)
@@ -218,10 +244,57 @@ else:  # quality
 
 ### 5.1 Scene Path (Gemma 4 Native Vision)
 
-- Model load: `Gemma4ForConditionalGeneration.from_pretrained("google/gemma-4-E2B", dtype=torch.bfloat16, attn_implementation="flash_attention_2")`
-- `vision_tower` + `multi_modal_projector` + `language_model` が取り出せる
-- 全 submodule `requires_grad=False`、LoRA 使う場合は LM の target_modules のみ LoRA trainable
-- Soft tokens: `max_soft_tokens ∈ {140, 280}` (§9.1 A/B)
+**Model load:**
+
+```python
+from transformers import Gemma4ForConditionalGeneration
+llm = Gemma4ForConditionalGeneration.from_pretrained(
+    "google/gemma-4-E2B",
+    dtype=torch.bfloat16,
+    attn_implementation="sdpa",   # torch 2.11 native SDPA + Flash backend
+).eval()
+# llm.model.vision_tower, llm.model.embed_vision, llm.model.language_model が使える
+# (multi_modal_projector は存在しない、Gemma 4 では embed_vision が projector 役)
+```
+
+**Image preprocessing (`Gemma4ImageProcessor` を直接使用、自作 patchify 禁止):**
+
+```python
+from transformers.models.gemma4.image_processing_gemma4 import Gemma4ImageProcessor
+image_proc = Gemma4ImageProcessor(max_soft_tokens=cfg.max_soft_tokens)  # default 280
+out = image_proc.preprocess(scene_imgs, return_tensors="pt")
+pixel_values = out["pixel_values"]             # (B, max_patches, 768)
+pixel_position_ids = out["image_position_ids"] # (B, max_patches, 2)、padding は (-1, -1)
+# do_rescale=True (÷255)、do_normalize=False (mean=0, std=1)
+#   → VLA 側 ImageNet 正規化を外す必要あり
+```
+
+**Vision forward (padding-stripped output → reshape):**
+
+```python
+feats = llm.model.get_image_features(pixel_values, pixel_position_ids)
+# feats.last_hidden_state: (N_valid_total, 768) padding-stripped flat
+# feats.pooler_output:     (N_valid_total, 1536) embed_vision 適用後
+
+# fixed input size なら batch 内 N_valid_per_image は均一、reshape 可
+n_valid_per_image = out["num_soft_tokens_per_image"][0].item()
+h_v = feats.pooler_output.view(B, n_valid_per_image, 1536)
+```
+
+**`max_soft_tokens` 設定 (YAML config で切替可、supported 値のみ):**
+- `_SUPPORTED_SOFT_TOKENS = {70, 140, 280, 560, 1120}` (transformers 5.5.4 実測)
+- `max_soft_tokens=70` → 64 tokens/image、max_patches=630 (padding 8.6%)
+- `max_soft_tokens=140` → 121 tokens/image、max_patches=1260 (padding 13.6%)
+- `max_soft_tokens=280` (default) → 256 tokens/image、max_patches=2520 (padding 8.6%)
+- compute 見積り比較: §9.1
+
+**全 submodule frozen:**
+
+```python
+for p in llm.parameters():
+    p.requires_grad = False  # vision_tower + embed_vision + language_model 全部
+# LoRA 使う場合 (Mode A only) は LM の target_modules のみ trainable 化
+```
 
 ### 5.2 Wrist Path (ResNet18)
 
@@ -277,7 +350,7 @@ def forward(self, x, h_a, h_t, p, h_w=None, h_sp=None):
 ### 5.7 Bridge Attention (Unchanged, 両 Mode 共通)
 
 - `modeling_prismatic_gemma4.py:246-256` の処理維持、25 層 hidden 抽出
-- h_t: (B, 25, 140 or 280, 1536)、h_a: (B, 25, 64, 1536)
+- h_t: (B, 25, N_valid_per_image, 1536) (N=64/121/256, max_soft_tokens 次第)、h_a: (B, 25, 64, 1536)
 - action head 側 `predict_action` の h_t / h_a 分離ロジック維持
 
 ### 5.8 LoRA on Gemma 4 LM (Mode A only)
@@ -402,7 +475,7 @@ Week 1 前半:
    - soft_prompt = action head concat、LLM input から削除
    - action head: film_gen 削除 + concat-to-x
    - dual-track config flag + forward 分岐
-2. `attn_implementation="flash_attention_2"` 有効化 (両 Mode 共通)
+2. `attn_implementation="sdpa"` (torch 2.11 native SDPA + Flash backend、flash-attn 2.x は torch 2.11 用 wheel なし)
 3. Mode A 固有: GC 有効化、LoRA 挿入
 4. Mode B 固有: action_queries frozen、torch.no_grad wrap
 
@@ -464,13 +537,26 @@ Week 3 末 - Week 4:
 |---|---|
 | `Gemma 4 LM (text_model)` | ~2.0B |
 | `Gemma 4 VisionModel` | ~151M |
-| `Gemma 4 multi_modal_projector` | 小 |
+| `Gemma 4 embed_vision` (Gemma4MultimodalEmbedder) | 小 |
 | `action_queries` (Mode B のみ) | 0.1M |
 
 ## 9. Open Questions
 
-### 9.1 Soft tokens: 140 vs 280
-Phase 0 smoke 後、5k step loss / validation action error 比較。デフォルト 280。
+### 9.1 Soft tokens: 70 / 140 / 280 比較
+
+Supported 値 (実測): `{70, 140, 280, 560, 1120}`。各 max_soft_tokens の compute 見積り (1 sample):
+
+| max_soft_tokens | LLM 入力 tokens | Vision attn (patches²) | LLM forward (seq~N+α) | Mode A 合計 (LLM backward 込み) | Mode B 合計 (no_grad LLM) |
+|---|---|---|---|---|---|
+| 70 | 64 | 630²/層 × 16 層 = ~24G | ~40G (seq ~170) | ~185G (LLM 支配) | ~64G (Vision/LLM 同等) |
+| 140 | 121 | 1260²/層 × 16 層 = ~38G | ~70G (seq ~230) | ~320G | ~110G |
+| 280 (default) | 256 | 2520²/層 × 16 層 = ~100G | ~125G (seq ~360) | ~600G | ~225G |
+
+**選定方針**:
+- **default 280**: Gemma 4 pretrain natural default、alignment 最大
+- **YAML config `max_soft_tokens` で切替可**、ablation 用
+- Phase 0 smoke で 70 / 140 / 280 loss curve 比較、実測で決定
+- Mode B は vision compute も効くので 70 / 140 が効果大、Mode A は LLM 支配なので 280 でも差小
 
 ### 9.2 LIBERO fine-tune での soft_prompt_library
 選択肢 A (disable) / B (Taco init で継続学習)。Phase 0 smoke 後決定。
@@ -524,7 +610,8 @@ Phase 0 smoke (Week 1 後半) は single GPU で両 mode 切替し基本動作�
 | Risk | Probability | Mitigation |
 |---|---|---|
 | Gemma 4 E2B の native vision が weights 未配布 | Low | config load 済、実装時 full load で verify |
-| Gemma 4 FA-2 互換性バグ | Low | HF 5.5.4 で `_supports_flash_attn=True`、smoke で確認 |
+| torch 2.11 native SDPA が Flash backend 起動しない | Low | `torch.backends.cuda.sdp_kernel` で明示、smoke で確認 |
+| Gemma 4 image preprocess の upsample で semantic 破綻 | Med | 処理前後 PNG round-trip 確認、feature cosine sim > 0.99 smoke |
 | Mode A: GC が transformers 5.5.4 で動かない | Low-Med | PR #45312 含 version 想定、Phase 0 で確認 |
 | Mode B: action_queries frozen で h_a が無意味化、loss が大幅劣化 | Med | FC init で smoke、劣化 >20% なら FA init に切替 (§5.10.1) |
 | Mode B: LLM no_grad で Bridge の `output_hidden_states` が正しく動かない | Low | torch.no_grad は forward 値には影響しない、標準動作 |
@@ -534,19 +621,34 @@ Phase 0 smoke (Week 1 後半) は single GPU で両 mode 切替し基本動作�
 | Mode A / Mode B 両方が baseline 以下 | Low-Med | §6.5 の rescue run 運用、Hackathon 期限ギリギリまで run 延長 |
 | 60k ckpt 破棄で学習やり直しが間に合わない | Med | Week 1 Phase 0 で問題発生あれば P3 (pretrain skip, LIBERO 直行) にフォールバック検討 |
 
+## 11.5 Environment (Rev 3 addendum)
+
+- **venv**: `.venv-gemma4` (not `.venv`、両方存在するが前者が project env)
+  - torch **2.11.0** + cu128
+  - transformers **5.5.4**
+  - torchvision 0.26.0
+  - Python 3.11.15
+  - uv 管理 (pip 直接利用不可、`uv pip install ...` 必要)
+- **Flash Attention**:
+  - `flash_attn` package 未インストール、**インストール不要**
+  - 理由: torch 2.11 用 flash-attn 2.x wheel は HF release に存在せず (最新 v2.8.3 も torch2.10 まで)、ソースビルドは依存解決が不安定
+  - torch 2.11 の native SDPA に Flash Attention backend が組み込み済、Gemma 4 での実効性能は flash-attn 2.x と同等レンジ
+- **smoke test 実行**: 必ず `.venv-gemma4/bin/python` を明示呼び出し (PATH の system python は 2.7)
+- **Gemma 4 AutoProcessor 不可**: `Gemma4VideoProcessor` が torchvision extras 不足で import 失敗する。**Image だけ使うなら `Gemma4ImageProcessor` を直接 import** して回避
+
 ## 12. Files to Modify
 
-- `VLA-Adapter/prismatic/extern/hf/modeling_prismatic_gemma4.py`: model wrapper 全面改修 (scene native vision、soft_prompt relocation、wrist 注入、**training_mode flag に応じた forward 分岐**、LoRA wrap (Mode A)、action_queries requires_grad 制御)
+- `VLA-Adapter/prismatic/extern/hf/modeling_prismatic_gemma4.py`: model wrapper 全面改修 (scene native vision、`Gemma4ImageProcessor` 統合、`embed_vision` 呼び出し、reshape back、soft_prompt relocation、wrist 注入、**training_mode flag に応じた forward 分岐**、LoRA wrap (Mode A)、action_queries requires_grad 制御)
 - `VLA-Adapter/prismatic/models/action_heads.py`:
   - `MLPResNet.forward` に `h_w`, `h_sp` 引数追加、concat + trim
   - `L1RegressionActionHead.predict_action` signature 更新
   - `film_gen` / `apply_film` 削除
 - `VLA-Adapter/vla-scripts/finetune_gemma4.py`: model build / dataloader / forward / trainable param 列挙 を新構造 + dual-track 対応、LoRA setup (Mode A)
-- `scripts/stage3/multi_dataset_loader.py` → `taco_solo_loader.py` 新規 (Fractal 削除、proprio 正規化、2cam)
+- `scripts/stage3/multi_dataset_loader.py` → `taco_solo_loader.py` 新規 (Fractal 削除、proprio 正規化、2cam、**scene 画像は raw のまま返し、正規化はモデル側で `Gemma4ImageProcessor` 経由で実施** = ImageNet 正規化は削除)
 - `scripts/gemma4/test_08_data_pipeline.py`: LIBERO loader 更新
 - `scripts/gemma4/test_06_full_forward.py` 等 smoke test: dual-track 両方の smoke を追加
 - 新規: `VLA-Adapter/prismatic/models/backbones/vision/wrist_resnet18.py`
-- 新規: `config/pretrain_taco_quality.yaml`, `config/pretrain_taco_speed.yaml`
+- 新規: `config/pretrain_taco_quality.yaml`, `config/pretrain_taco_speed.yaml` (両方に `max_soft_tokens` 項目、default 280)
 - (optional) LoRA: `peft` 経由 or 手動 `LoRALinear`
 
 ## 13. Summary of Decisions
@@ -564,16 +666,20 @@ Phase 0 smoke (Week 1 後半) は single GPU で両 mode 切替し基本動作�
 | 9 | Fine-tune: LIBERO (Stage 2 protocol) | ✅ |
 | 10 | Proprio: 有効化 | ✅ |
 | 11 | 60k checkpoint: 破棄 | ✅ |
-| 12 | Flash Attention 2: Phase 0 から有効化 | ✅ |
+| 12 | `attn_implementation = "sdpa"` (torch 2.11 native SDPA + Flash backend、flash-attn 2.x は torch 2.11 用 wheel なし) | ✅ (rev 3) |
 | 13 | RoPE: concat 後 seq に一様適用 | ✅ |
 | 14 | **Dual-Track 戦略: Mode A (Quality) / Mode B (Speed) を並行実装・並行学習** | ✅ |
 | 15 | **Mode A: action_queries trainable + GC + LoRA r=16** | ✅ |
 | 16 | **Mode B: action_queries frozen + LLM no_grad + no LoRA** | ✅ |
 | 17 | **Mode B action_queries init: デフォルト FC (zero)、劣化時 FA (reserved token)** | ✅ |
 | 18 | **Deliverable selection: LIBERO eval 勝者、差 3% 以内なら Mode B 採用** | ✅ |
-| 19 | Scene soft tokens 140 vs 280 | Open (§9.1) |
+| 19 | Scene `max_soft_tokens` 70 / 140 / 280 比較 (YAML config 切替、default 280) | Open (§9.1) |
 | 20 | LIBERO での soft_prompt_library 扱い | Open (§9.2) |
 | 21 | Hardware: 8 GPU (A100 80GB×2 + 40GB×6)、Mode A に 80GB 優先割当、両 mode DDP 4-way 並行 | ✅ (§9.8) |
+| 22 | **Vision preprocess: `Gemma4ImageProcessor` 直接使用、自作 patchify 禁止** | ✅ (rev 3) |
+| 23 | **VLA 側 ImageNet 正規化を外す (processor は do_normalize=False)** | ✅ (rev 3) |
+| 24 | **embed_vision 出力は padding-stripped flat、batch reshape に `num_soft_tokens_per_image` 使用** | ✅ (rev 3) |
+| 25 | **venv: `.venv-gemma4` (torch 2.11.0, transformers 5.5.4, torchvision 0.26)** | ✅ (rev 3) |
 
 ---
 
