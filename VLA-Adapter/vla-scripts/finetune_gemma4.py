@@ -132,6 +132,13 @@ class FinetuneConfig:
     save_latest_checkpoint_only: bool = True
     run_root_dir: Path = Path("runs/gemma4")
 
+    # --- Weight init from prior checkpoint (Stage 3 → Stage 2 transfer 比較用) ---
+    # 非空なら model build 後に load_state_dict(strict=False) で trainable weights を上書き。
+    # optimizer/scheduler/step は resume せず、新規 run として扱う。
+    # Stage 3 ckpt (soft_prompt_library 含む) を Stage 2 で load する用途想定、
+    # 不整合 key は strict=False で無視 (soft_prompt_library.* 等)。
+    init_weights_from: str = ""
+
     # --- WandB (smoke は空 string で無効化) ---
     wandb_project: str = ""
     wandb_entity: str = ""
@@ -670,6 +677,20 @@ def finetune(cfg: FinetuneConfig) -> None:
     t0 = time.time()
     model_vla, tok, vision_backbone = build_model(cfg, device)
     rprint(f"  model loaded in {time.time()-t0:.1f}s")
+
+    # --- Optional: init trainable weights from prior checkpoint (Stage 3 → Stage 2 transfer) ---
+    if cfg.init_weights_from:
+        rprint(f"\n=== Init weights from: {cfg.init_weights_from} ===")
+        payload = torch.load(cfg.init_weights_from, map_location=device, weights_only=False)
+        src_state = payload["trainable_state_dict"]
+        # Stage 3 ckpt は soft_prompt_library.* を含む、Stage 2 model は持たない → strict=False で無視
+        missing, unexpected = model_vla.load_state_dict(src_state, strict=False)
+        relevant_missing = [k for k in missing if not k.startswith("llm.") and not k.startswith("vision_backbone.")]
+        rprint(f"  loaded keys: {len(src_state) - len(unexpected)}")
+        rprint(f"  unexpected (ignored): {unexpected[:3]}{' ...' if len(unexpected) > 3 else ''} (total {len(unexpected)})")
+        rprint(f"  relevant_missing: {relevant_missing[:3]}{' ...' if len(relevant_missing) > 3 else ''} (total {len(relevant_missing)})")
+        src_step = payload.get("gradient_step_idx", "?")
+        rprint(f"  source gradient_step_idx: {src_step} (new run starts from step 0)")
 
     rprint(f"\n=== Building data pipeline ===")
     t0 = time.time()
