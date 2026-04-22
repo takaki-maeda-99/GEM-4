@@ -1083,6 +1083,26 @@ def finetune(cfg: FinetuneConfig) -> None:
             "step_sec": round(step_sec, 3),
         })
 
+        # --- Diagnostic: Mode A 経時劣化調査用 (Q2) ---
+        # 200 step 毎に GPU temp/power/memory_stats を log、thermal/fragment の切り分け用。
+        if is_main_process and step > 0 and step % 200 == 0:
+            try:
+                import subprocess
+                smi = subprocess.run(
+                    ["nvidia-smi", "--query-gpu=index,temperature.gpu,power.draw,memory.used,utilization.gpu",
+                     "--format=csv,noheader,nounits"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                alloc_gb = torch.cuda.memory_allocated() / 1e9
+                reserved_gb = torch.cuda.memory_reserved() / 1e9
+                max_alloc_gb = torch.cuda.max_memory_allocated() / 1e9
+                print(f"  [diag step={step}] alloc={alloc_gb:.1f}GB reserved={reserved_gb:.1f}GB "
+                      f"max_alloc={max_alloc_gb:.1f}GB s/step={step_sec:.2f}")
+                for line in smi.stdout.strip().split("\n")[:2]:  # only own GPUs (first 2 entries from CUDA_VISIBLE_DEVICES)
+                    print(f"    smi: {line}")
+            except Exception as _e:
+                pass  # diag 失敗は学習を止めない
+
         # --- Log (rank 0 のみ) ---
         if is_main_process and (cfg.smoke_mode or step % cfg.wandb_log_freq == 0):
             # Pretrain mode では per-dataset loss + soft_prompt_grad_norm を append
