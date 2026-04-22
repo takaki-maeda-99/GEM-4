@@ -273,6 +273,19 @@ def build_model(cfg: FinetuneConfig, device: torch.device) -> tuple[VLAAdapterGe
     ).to(device, dtype=torch.bfloat16)
     model_vla.train()
 
+    # --- Dual-Track (Task 10/11): mode-specific setup ---
+    if cfg.training_mode == "quality":
+        # Mode A: action_queries trainable (default, already set by nn.Embedding init),
+        # LLM gradient checkpointing enabled (Gemma 4 text model のみ、full model GC は
+        # HF #45242 で禁止、line 260 参照)
+        assert model_vla.action_queries.weight.requires_grad is True, \
+            "action_queries should be trainable by default in Mode A"
+        model_vla.llm.model.language_model.gradient_checkpointing_enable()
+        print("[mode-A] action_queries trainable; LLM GC enabled")
+    elif cfg.training_mode == "speed":
+        # Mode B: Task 11 で実装
+        print("[mode-B] (placeholder, Task 11 で実装)")
+
     total_trainable = sum(p.numel() for p in model_vla.parameters() if p.requires_grad) / 1e6
     # Soft Prompt 有効化時は trainable 数 +num_datasets × 32 × 1536 × 4 byte / 1M param 上乗せ許容
     soft_prompt_expected_M = cfg.num_pretrain_datasets * cfg.num_soft_prompt_tokens * 1536 / 1e6
