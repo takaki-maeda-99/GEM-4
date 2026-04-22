@@ -3,6 +3,9 @@
 
 training_mode: "speed"
 
+# DDP (torchrun 起動時は必須。false のままだと 4 rank が全部 rank=0 を掴む独立 run になる)
+ddp_mode: true
+
 # Model
 gemma_model_id: "google/gemma-4-E2B"
 attn_implementation: "sdpa"

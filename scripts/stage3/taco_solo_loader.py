@@ -63,6 +63,15 @@ from prismatic.vla.constants_gemma4 import (  # noqa: E402
     VISION_PLACEHOLDER_BEGIN_IDX,
 )
 
+# Rev 3 Task 6/14 coupling: NUM_VISION_TOKENS は max_soft_tokens=280 前提の暫定値 (256)。
+# YAML で max_soft_tokens を変更する場合は _build_input_ids の layout も追随が必要。
+# 現状 constants_gemma4.py の値がズレていれば早期 fail させる:
+assert NUM_VISION_TOKENS == 256, (
+    f"taco_solo_loader は NUM_VISION_TOKENS=256 (max_soft_tokens=280) 前提。"
+    f"現在 {NUM_VISION_TOKENS}。max_soft_tokens を変更するなら、VLAAdapterGemma4 の "
+    f"model.num_vision_tokens を loader に注入する caller-injection 設計に移行が必要。"
+)
+
 # ===========================================================
 # Constants
 # ===========================================================

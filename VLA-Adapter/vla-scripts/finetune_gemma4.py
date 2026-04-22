@@ -860,6 +860,12 @@ def finetune(cfg: FinetuneConfig) -> None:
         rprint(f"Scheduler: MultiStepLR(milestones=[{cfg.num_steps_before_decay}], gamma=0.1)")
         rprint(f"Warmup: 10% → 100% linear over {cfg.lr_warmup_steps} steps (原 finetune.py:1060-1065 準拠)")
 
+    # Task 17 fix (code review C1): clip_grad_norm_ / pre-clip sweep 用に
+    # optimizer の param group から全 trainable param 列を再構築。
+    # 旧 flat `trainable_params = [p for p in model.parameters() if p.requires_grad]`
+    # は Task 17 で削除されたが、下段 L989/993 の参照が残っていたため step 0 で NameError。
+    trainable_params = [p for g in optimizer.param_groups for p in g["params"]]
+
     # --- 5/13 hard deadline parser (Stage 3 R19、pretrain mode のみ active) ---
     hard_stop_deadline = None
     if cfg.pretrain_mode and cfg.hard_stop_datetime:
