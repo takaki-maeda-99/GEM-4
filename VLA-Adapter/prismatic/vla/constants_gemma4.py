@@ -29,12 +29,13 @@ NUM_ACTION_TOKENS      = 64                # Action query 個数 (= VLA-Adapter 
 # Action range (258885-258948) の直後に連続して確保。
 # tokenizer での検証済み: 258949=<unused3032>, 259460=<unused3543>、全て <unusedXXXX> パターン。
 VISION_PLACEHOLDER_BEGIN_IDX = 258949
-# DEPRECATED (Task 6 rev 3): max_soft_tokens が YAML で可変 (default 280 → 256 tokens) になったため、
-# constant で固定値を持つのをやめた。参照側 (action_head, bridge attn, vmask など) は
-# VLAAdapterGemma4.num_vision_tokens 属性経由で実測値を使う。
-# None trap: 誤って算術や比較に使えば即 TypeError で気付ける。
-NUM_VISION_TOKENS            = None
-NUM_VISION_PLACEHOLDERS      = None  # backward-compat alias
+# DEPRECATED (Task 6 rev 3): max_soft_tokens が YAML で可変になったため、この constant は
+# Task 14 の data loader migration で完全に model.num_vision_tokens (VLAAdapterGemma4 attr)
+# に置換される予定。それまでの暫定値として max_soft_tokens=280 の num_soft_tokens_per_image
+# 値 (実測 256) を置く。Task 6 スコープ外の参照箇所 (multi_dataset_loader.py,
+# eval_libero_gemma4.py, test_08_data_pipeline.py 等) は Task 14 で migration する。
+NUM_VISION_TOKENS            = 256
+NUM_VISION_PLACEHOLDERS      = 256  # backward-compat alias
 
 # Proprio placeholder ID (1 個)。vision placeholder range の直後。
 PROPRIO_PLACEHOLDER_IDX = 259461

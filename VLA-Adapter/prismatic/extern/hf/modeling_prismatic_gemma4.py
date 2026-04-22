@@ -28,6 +28,7 @@ from typing import Dict, Optional, Tuple, Union
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from transformers.models.gemma4.image_processing_gemma4 import Gemma4ImageProcessor
 
 from prismatic.models.action_heads import L1RegressionActionHead
 from prismatic.vla.constants_gemma4 import (
@@ -102,14 +103,13 @@ class VLAAdapterGemma4(nn.Module):
             p.requires_grad = False
 
         # --- Gemma 4 native vision preprocessor ---
-        # Import Gemma4ImageProcessor directly to avoid Gemma4VideoProcessor torchvision issue
-        from transformers.models.gemma4.image_processing_gemma4 import Gemma4ImageProcessor
+        # Gemma4ImageProcessor は aspect-ratio-preserving resize + patchify + position_ids 生成を担う。
         self.image_processor = Gemma4ImageProcessor(max_soft_tokens=max_soft_tokens)
-        self.max_soft_tokens = max_soft_tokens
+        self.max_soft_tokens = max_soft_tokens   # retained for introspection / logging (__repr__)
 
         # num_vision_tokens を実測で決める (224x224 dummy で processor に聞く)
         # 実測: max_soft_tokens=70→64, 140→121, 280→256
-        _dummy = torch.rand(3, 224, 224) * 255
+        _dummy = torch.zeros(3, 224, 224)   # content irrelevant, only shape matters; avoids RNG contamination
         _out = self.image_processor.preprocess(_dummy, return_tensors="pt")
         self.num_vision_tokens: int = int(_out["num_soft_tokens_per_image"][0])
 
@@ -162,12 +162,18 @@ class VLAAdapterGemma4(nn.Module):
         """Gemma 4 native vision で scene image → (B, num_vision_tokens, llm_dim).
 
         Args:
-            scene_images: PIL images / numpy / torch tensor.
+            scene_images: PIL images / numpy / torch tensor。
                 tensor の場合は (B, 3, H, W) で [0, 255] float か uint8。
                 processor が内部で aspect-ratio-preserving resize + patchify + rescale(÷255) を行う。
 
         Returns:
             h_v: (B, num_vision_tokens, llm_dim) reshaped pooled tokens.
+
+        NOTE: batch 内すべての画像が同じ num_soft_tokens_per_image を生むことを前提としている
+        (fixed-size square input ではこれが保証される)。異なる aspect ratio / size を混ぜた
+        batch では pooler_output が不均等長になり assertion 失敗する。その場合は
+        out["num_soft_tokens_per_image"] を使って per-row slice が必要 (Task 14 で data
+        loader が固定サイズを保証する前提なので、現時点では assertion で十分)。
         """
         device = self.llm.device
         dtype = self.llm.dtype  # bfloat16
@@ -191,7 +197,11 @@ class VLAAdapterGemma4(nn.Module):
     # -----------------------------------------------------------------
     def forward(
         self,
-        pixel_values: Dict[str, torch.Tensor],  # {"dino": (B, T, 3, H, W), "siglip": (B, T, 3, H, W)}
+        pixel_values: Dict[str, torch.Tensor],
+        # pixel_values formats:
+        #   If dict: {"scene": (B, 3, H, W), "wrist": (B, 3, H, W)} (Task 14 format; wrist path added in Task 8)
+        #   If tensor: (B, 3, H, W) scene-only (legacy smoke path)
+        # Processed by self.image_processor (Gemma4ImageProcessor) inside encode_scene().
         input_ids: torch.LongTensor,            # (B, L) placeholder 込み
         proprio: torch.Tensor,                  # (B, proprio_dim) raw
         actions: Optional[torch.Tensor] = None, # (B, 8, 7) or None
@@ -207,7 +217,7 @@ class VLAAdapterGemma4(nn.Module):
 
         # ---- Vision features (Task 6: Gemma 4 native; scene only. wrist は Task 8 で扱う) ----
         scene_imgs = pixel_values["scene"] if isinstance(pixel_values, dict) else pixel_values
-        vision_projected = self.encode_scene(scene_imgs)                # (B, num_vision_tokens, llm_dim)
+        h_v = self.encode_scene(scene_imgs)                # (B, num_vision_tokens, llm_dim)
 
         # ---- PLE 事前計算 (OOM 回避) ----
         with torch.no_grad():
@@ -226,7 +236,7 @@ class VLAAdapterGemma4(nn.Module):
             apos = amask[b].nonzero(as_tuple=True)[0]
             vpos = vmask[b].nonzero(as_tuple=True)[0]
             embeddings[b, apos] = self.action_queries.weight
-            embeddings[b, vpos] = vision_projected[b]
+            embeddings[b, vpos] = h_v[b]
 
         # ---- Stage 3 (optional): Soft Prompt を inputs_embeds 前段に concat (案 B) ----
         # X-VLA 原実装は action head 内 transformer で末尾 concat、本 plan §R21 は LLM 前段 (案 B) で deviation。
