@@ -883,15 +883,18 @@ def finetune(cfg: FinetuneConfig) -> None:
     #   step 0 (warmup kernel JIT 3.18 s in Phase 2b 実測) は deque に入れずに除外
     #
     # 閾値は training_mode 毎に設定 (Mode A は LoRA+GC で ~2.2 s/step、Mode B は no_grad で ~1.3 s/step):
+    # 閾値は batch_size に応じて scale (compute per step は batch にほぼ線形):
+    #   quality: 実測 2.2s@B=24, 5.5s@B=64 → base≈0.3s + 0.082s/sample
+    #   speed:   実測 1.3s@B=24 → base≈0.2s + 0.046s/sample (B=64 推定 3.1s)
+    # 閾値は expected の 1.3x (WARN) / 2.5x (HALT) と generous に (batch 揃ってれば overshoot 稀)
     if cfg.training_mode == "quality":
-        # Mode A (LoRA + GC + Gemma4 native vision): 実測 ~2.2 s/step @ B=24 DDP 2-way、
-        # 2 σ overshoot で 3.5 s/step まで許容。
-        ESCALATION9_WARN_THRESHOLD = 2.8
-        ESCALATION9_HALT_THRESHOLD = 3.5
+        _expected = 0.3 + 0.082 * cfg.batch_size
+        ESCALATION9_WARN_THRESHOLD = _expected * 1.3
+        ESCALATION9_HALT_THRESHOLD = _expected * 2.5
     elif cfg.training_mode == "speed":
-        # Mode B (no_grad LLM): 実測 ~1.3 s/step @ B=24 DDP 2-way、2 σ overshoot で 2.0 s/step。
-        ESCALATION9_WARN_THRESHOLD = 1.6
-        ESCALATION9_HALT_THRESHOLD = 2.0
+        _expected = 0.2 + 0.046 * cfg.batch_size
+        ESCALATION9_WARN_THRESHOLD = _expected * 1.3
+        ESCALATION9_HALT_THRESHOLD = _expected * 2.5
     else:
         # Stage 2 (legacy DinoSigLIP) fallback、original 閾値維持
         ESCALATION9_WARN_THRESHOLD = 1.29
