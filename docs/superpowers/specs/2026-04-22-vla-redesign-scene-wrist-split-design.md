@@ -50,7 +50,7 @@
 | `ProprioProjector` | proprio 8 dim → 1536 | **trainable** | 小 |
 | `ActionHead` (`MLPResNetBlock_Pro` × 24) | 5 stream cross-attn + L1 regression | **trainable** | 現状 675M ベース |
 
-合計 trainable: **~920M** (現状 675M + 新 K/V projections ~227M + wrist 系 ~13M + soft prompt ~0.1M)。action head 側の増加が支配的。詳細は §8.1。
+合計 trainable: **~807M** (現状 675M − film_gen dead code 113M + 新 K/V projections 227M + wrist 系 13M + soft prompt 0.1M)。詳細は §8.1。
 
 ### 4.2 Data flow
 
@@ -186,7 +186,7 @@ self.gating_soft_prompt = nn.Parameter(torch.zeros(1)) # 新規
 # 既存の gating_factor (= task stream の ratio_g) は維持
 ```
 
-`forward` での attention score 合成を 3 → 5 に拡張:
+`forward` での attention score 合成を 3 → 5 に拡張。併せて **現存する dead code `film_gen` (`nn.Linear(dim, dim*2)`) と `apply_film` メソッドを削除** (forward で既に全コメントアウト済、外部参照なし、60k ckpt 破棄で chkpt 互換縛りもなし、削除で block あたり 4.72M × 24 = 113M params の死重を除去):
 
 ```python
 attn_scores = [
@@ -297,18 +297,22 @@ output = torch.matmul(attn_weights, v_combined)
 
 ## 8. Parameters Summary
 
-### 8.1 Trainable (≈ 920M)
+### 8.1 Trainable (≈ 807M)
 
 | Group | Params | 備考 |
 |---|---|---|
-| `action_head` base (MLPResNetBlock_Pro × 24, 3-stream) | ~675M | 現状 `L1RegressionActionHead(input_dim=1536, hidden_dim=1536, use_pro_version=True)` 実測 |
-| `action_head` 5-stream 拡張分 (new K/V projections) | **~227M** | 4 new `Linear(1536,1536)` per block × 24 blocks = 4 × 2.36M × 24 ≈ 226.7M |
+| `action_head` base (MLPResNetBlock_Pro × 24, 3-stream) | ~675M | 現状 `L1RegressionActionHead(input_dim=1536, hidden_dim=1536, use_pro_version=True)` 実測 (assertion 値 675.138M) |
+| `action_head` **film_gen 削除分** | **−113M** | `Linear(1536, 3072)` × 24 blocks、forward で全コメントアウト済の dead code |
+| `action_head` 5-stream 拡張分 (new K/V projections) | **+227M** | 4 new `Linear(1536,1536)` per block × 24 blocks = 4 × 2.36M × 24 ≈ 226.7M |
 | `soft_prompt_library` | 0.1M | num_datasets=1 (Taco) × 32 × 1536 |
 | `wrist_resnet18` | 11.7M | ImageNet init |
 | `wrist_projector` | 1.2M | 512 → 1536 |
 | `proprio_projector` | ~2.4M | 現状維持 (2 層 MLP: 8 → 1536 → 1536) |
 
-**Note on +227M**: action head の 4 new Linear (k_wrist, v_wrist, k_sp, v_sp) × 24 blocks が非自明に大きい。これは学習時の optimizer state memory (AdamW だと params × 8 byte × 2 ≈ 3.6 GB 追加) を意味する。batch 拡大 ROI とトレードオフ。low-rank 化 (bottleneck 128 dim 経由) や block 数削減 (24 → 16) で絞る選択肢もあるが、Hackathon では baseline として full dim で実装、必要なら後続 phase で ablation。
+**Net action head**: 675 − 113 + 227 = **789M**
+**Total trainable**: **~807M**
+
+**Note on +227M − 113M = +114M 純増**: action head の 4 new Linear (k_wrist, v_wrist, k_sp, v_sp) × 24 blocks が追加コスト、同時に死重 film_gen を除去して相殺。最適化対象として妥当なバランス。最適化時の optimizer state memory (AdamW だと params × 8 byte × 2 ≈ 1.8 GB 増) を意味する。さらに削減したい場合は low-rank 化 (bottleneck 128 dim 経由で new K/V を 227→38M) や block 共有 K/V (encoder-decoder cross-attn 流、227→9M) が選択肢だが、Hackathon では full dim で実装、必要なら後続 phase で ablation。
 
 ### 8.2 Frozen (≈ 2.15B、概算)
 
@@ -371,7 +375,7 @@ Hackathon 2026-05-18 までの 4 週間で以下の順で進める:
 ## 12. Files to Modify (Implementation Surface)
 
 - `VLA-Adapter/prismatic/extern/hf/modeling_prismatic_gemma4.py`: model wrapper 全面改修 (scene path native vision 化、soft prompt relocation、LLM no_grad、wrist 注入)
-- `VLA-Adapter/prismatic/models/action_heads.py`: `MLPResNetBlock_Pro` 3 → 5 stream 拡張、gating 追加、`predict_action` signature 変更
+- `VLA-Adapter/prismatic/models/action_heads.py`: `MLPResNetBlock_Pro` 3 → 5 stream 拡張、gating 追加、`predict_action` signature 変更、**併せて dead code `film_gen` / `apply_film` を削除** (113M dead weight 除去)
 - `VLA-Adapter/vla-scripts/finetune_gemma4.py`: model build / dataloader / forward 呼び出し / trainable param 列挙 を新構造に対応
 - `scripts/stage3/multi_dataset_loader.py`: → `taco_solo_loader.py` 新規 (Fractal 削除、proprio 正規化、2cam で rgb_static + rgb_gripper)
 - `scripts/gemma4/test_08_data_pipeline.py`: LIBERO loader を新 signature に合わせ調整
@@ -397,3 +401,4 @@ Hackathon 2026-05-18 までの 4 週間で以下の順で進める:
 | 13 | 60k checkpoint: 破棄 | ✅ |
 | 14 | Scene soft tokens 140 vs 280: A/B test (Phase 0 後) | Open |
 | 15 | LIBERO での soft_prompt_library 扱い | Open |
+| 16 | `MLPResNetBlock_Pro` の dead code (`film_gen` / `apply_film`) 削除 | ✅ |
