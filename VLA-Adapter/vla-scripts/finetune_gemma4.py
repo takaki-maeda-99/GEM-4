@@ -154,7 +154,7 @@ class FinetuneConfig:
 
     # --- Phase 3c-0 optimization knobs (low-risk algorithmic optimizations) ---
     optim_fused: bool = False                  # T1: AdamW(fused=True)、期待 5-15% forward+backward overhead 削減
-    attn_implementation: str = "sdpa"          # T5: "sdpa" or "flash_attention_2"、FA-2 は Gemma 4 互換性要検証
+    attn_implementation: str = "sdpa"          # sdpa: torch 2.11 native SDPA (Flash backend 組込); flash-attn 2.x は torch2.11 用 wheel なし
 
     # --- Smoke mode (Phase 2b) ---
     smoke_mode: bool = False                  # True: max_steps=100, save@50, resume check on
@@ -238,7 +238,8 @@ def build_model(cfg: FinetuneConfig, device: torch.device) -> tuple[VLAAdapterGe
     if tok.pad_token_id is None:
         tok.pad_token = tok.eos_token
 
-    gemma = AutoModelForCausalLM.from_pretrained(
+    from transformers import Gemma4ForConditionalGeneration
+    gemma = Gemma4ForConditionalGeneration.from_pretrained(
         cfg.gemma_model_id, dtype=torch.bfloat16, attn_implementation=cfg.attn_implementation,
     ).to(device).eval()
     gemma.config.use_cache = True                       # R6: use_cache=True 必須
