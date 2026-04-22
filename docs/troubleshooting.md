@@ -226,3 +226,132 @@ model_vla = DDP(model_vla, device_ids=[local_rank], output_device=local_rank,
 - 原因は `predict_action` 内の block 間分岐、アクティブ path が phase 依存だが C1 本番 DDP retrain でも同設定 (`find_unused_parameters=True`) を維持
 
 ---
+
+## 2026-04-22 (Dual-Track Redesign Phase)
+
+### #007  Gemma 4 native vision API が spec 想定と乖離 (Task 6 pre-implementation inspection)
+
+**現象**:
+Dual-track redesign の初期 spec / plan では Gemma 4 内蔵 vision を `m.model.vision_tower` + `m.model.multi_modal_projector` で使える前提だった (PaliGemma 的想定)。Task 6 のpre-implementation inspection で `Gemma4ForConditionalGeneration` の実構造を調査したところ複数の乖離が判明:
+
+1. `multi_modal_projector` attribute **存在しない**。代わりに `embed_vision` (`Gemma4MultimodalEmbedder` = RMSNorm + Linear) が projector 役
+2. `vision_tower` は **patchified input** を要求: `pixel_values: (B, max_patches, 768)` + `pixel_position_ids: (B, max_patches, 2)` (padding は `(-1, -1)`)、生画像 `(B, 3, H, W)` 不可
+3. `vision_tower` 出力は **padding-stripped flat** `(N_valid_total, 768)`、batch 次元が畳まれる
+4. `_SUPPORTED_SOFT_TOKENS = (70, 140, 280, 560, 1120)` のみ有効、spec 想定の `{128, 256}` 不可
+5. `Gemma4ImageProcessor.preprocess()` は `do_normalize=False` (ImageNet 正規化なし、rescale ÷255 のみ)
+6. 画像サイズに関わらず processor が内部で aspect-ratio-preserving resize → 常に `max_patches = max_soft_tokens * 9` のサイズに揃う
+
+**原因**:
+Gemma 4 の multimodal 構造は PaliGemma 系 (SigLIP + Linear projector) とは別設計の native variant (Gemma4MultimodalEmbedder)。HF docs が新しく浸透していなかったため spec 執筆時に従来 PaliGemma 前提で書いてしまった。
+
+**対策**:
+Spec rev 3 (`6c8d3e5`) + Plan rev 3 (`0a04ebf`) で全面修正:
+- `Gemma4ImageProcessor` を直接使用 (自作 patchify 禁止)
+- `VLAAdapterGemma4.encode_scene` helper で preprocess → `get_image_features` → reshape back を一気通貫
+- `max_soft_tokens` を YAML 可変化 (default 280 → 256 soft tokens/image)
+- `NUM_VISION_TOKENS` constant は model 属性 `self.num_vision_tokens` で dynamic 化
+
+**教訓**:
+- 新モデルの内部構造は **実環境で `from_pretrained` + `named_children()` + `inspect.signature(forward)` で実測してから spec 書き起こす**。HF docs / paper 類推は誤る
+- `AutoProcessor.from_pretrained` は Gemma4VideoProcessor を巻き込んで torchvision extras 不足で import fail することがある。image だけなら `from transformers.models.gemma4.image_processing_gemma4 import Gemma4ImageProcessor` で直 import が安全
+- Padding-stripped flat 出力は batch 復元に `num_soft_tokens_per_image` metadata が必須。固定サイズ入力なら batch 内で均一、reshape `(N, D) → (B, N/B, D)` で戻せる
+
+---
+
+### #008  torch 2.11 用 flash-attn 2.x wheel が存在しない (Task 5)
+
+**現象**:
+Task 5 で `attn_implementation = "flash_attention_2"` を default にしようとしたが、`.venv-gemma4` (torch 2.11.0+cu128, Python 3.11) 向けの flash-attn 2.x wheel が HF の releases に一切存在せず (v2.8.3 までで最新は torch2.10 対応)。ソース build は過去セッションで試行して失敗 (>1h コンパイル後タイムアウト/依存解決不能)。
+
+また session 途中で `.venv` (別 venv、torch 2.7.1) に flash-attn 2.8.3 wheel をインストールし Task 5 smoke test を走らせてしまい、"FA-2 動作確認済" と誤報告した事件あり (.venv と `.venv-gemma4` の取り違え)。
+
+**原因**:
+1. flash-attn release cycle が torch の release と少し遅れる、torch 2.11 は比較的新しいため wheel 未追いつき
+2. 複数 venv (`.venv` と `.venv-gemma4`) が同 repo に共存、どちらを使うかの意識が薄いと即ミス
+3. system `python` は 2.7 (ubuntu default)、つい実行すると全然違う env で走る
+
+**対策**:
+- `attn_implementation = "sdpa"` を維持決定 (Task 5 commit `b9b19d3` で amend)。torch 2.11 の native SDPA に Flash Attention backend が組み込み済なので Gemma 4 での実効速度は FA-2 と同等レンジ
+- Spec rev 3 / Plan rev 3 で全 `"flash_attention_2"` リテラルを `"sdpa"` に置換
+- **全ドキュメント / コマンド例に `.venv-gemma4/bin/python` を絶対パスで記載、`python` / `.venv/bin/python` 禁止**
+
+**教訓**:
+- 新しい torch に乗り換える時は flash-attn wheel 存在を先に確認 (`curl -s https://api.github.com/repos/Dao-AILab/flash-attention/releases` で grep)
+- 複数 venv の共存は事故の元。project root に `.envrc` + direnv、または `UV_PROJECT_ENVIRONMENT` で一本化するのが理想
+- subagent への prompt に **Python env を CRITICAL として明示**する (`.venv-gemma4/bin/python`)、複数回繰り返すくらいで丁度いい
+
+---
+
+### #009  Gemma 4 vision 入力は画像サイズに依らず常に同じ patch 数に resize される (Task 6, Task 14)
+
+**現象**:
+`Gemma4ImageProcessor.preprocess(img_224x224)` でも `preprocess(img_768x768)` でも出力 `pixel_values.shape` が同じ `(1, max_patches, 768)` になる。valid patch count も `num_soft_tokens_per_image` も同値。
+
+**原因**:
+Gemma4ImageProcessor の `aspect_ratio_preserving_resize` が `max_patches = max_soft_tokens * pooling_kernel_size^2` を target に画像を resize するため、入力画像サイズに関わらず常に同じ内部表現に揃える仕様。224x224 を渡しても内部で upsample して 768x768 相当 (max_soft_tokens=280 時) で処理される。
+
+**影響**:
+- Vision attention compute は **max_soft_tokens が決定**、入力画像サイズは計算量に影響しない (padding 量だけ変わる)
+- max_soft_tokens=70 → 64 soft tokens/image、vision attn O(630²)
+- max_soft_tokens=140 → 121 soft tokens/image、vision attn O(1260²)
+- max_soft_tokens=280 (default) → 256 soft tokens/image、vision attn O(2520²)
+- data loader で 224x224 に事前 resize する必要なし (processor が内部で整える)、ただし I/O / 初期 resize コストは残る
+
+**対策**:
+- `VLAAdapterGemma4.__init__` で dummy probe を一度走らせて `self.num_vision_tokens` を実測決定 (初期化コスト数十 ms、副作用なし)
+- YAML `max_soft_tokens` で LLM 入力トークン数 vs vision compute を trade-off 可能に (default 280)
+
+**教訓**:
+- HF の image processor は黒箱ではなく、source 読んで resize 方針を把握しないと memory / compute 見積もりを誤る
+- `do_rescale=True, do_normalize=False, image_mean=[0,0,0], image_std=[1,1,1]` という Gemma 4 default は ImageNet 系と異なる。data loader 側で ImageNet 正規化しない選択が正解
+
+---
+
+### #010  VLAAdapterGemma4 forward interface 変更が downstream `finetune()` main に cascade (Task 11, 13, 14)
+
+**現象**:
+Task 6 で `VLAAdapterGemma4.__init__` の `vision_backbone` 引数を削除、Task 7 で `pixel_values` dict schema を `{"dino", "siglip"}` → `{"scene", "wrist"}` に変更、Task 8 で `self.wrist_encoder` 属性追加、Task 11 で `training_mode` 引数追加、といった interface 変更が重なり、`finetune_gemma4.py` の downstream (`finetune()` main 関数内) に 6-8 箇所の stale 参照が残った:
+
+- `build_model` 返り値 3-tuple → 2-tuple 変更 (Task 13)
+- `build_pretrain_dataloader(cfg, tok, vision_backbone)` 引数削除
+- `inner_model.vision_backbone.parameters()` grad-leak check (存在しない attribute アクセス)
+- subprocess spawn の `--vision-backbone-id` 引数
+- `FinetuneConfig.vision_backbone_id` 停止必要
+
+Task 11/12/13 実装時の smoke test は **`build_model` 単体呼び出しで検証**していたため、`finetune()` main flow の壊れは検知できず。Task 14 で Implementer が grep 調査して全部洗い出し、一括 cleanup。
+
+**原因**:
+Task レベルでの scope 境界が厳しく、Task 6 等では「VLAAdapterGemma4 の内部だけ」を守ったため、downstream の参照元までは触らなかった (plan が "Task 14 (data loader) で吸収" と scope 分離していた)。しかし各 Task の smoke test は通るので "破壊検知" はされない。
+
+**対策**:
+Task 14 で:
+- `build_model` から `vision_backbone` 引数・関連 `DinoSigLIPViTBackbone` 構築を削除
+- `build_pretrain_dataloader` を新 `taco_solo_loader.TacoSoloDataset` 経由に置換
+- `build_dataloader` (LIBERO path) は `NotImplementedError` + FIXME 残し (LIBERO migration 別 task)
+- grad-leak check は削除 (`llm.parameters()` の freeze 一括で保証)
+- subprocess spawn から `--vision-backbone-id` 除去
+
+**教訓**:
+- interface 変更を伴う refactor では **caller grep (`grep -rn "<removed_attr>\|<removed_kwarg>"`)** を implementer prompt に組み込む。smoke pass だけでは不十分
+- plan で scope を「A の内部だけ」に絞る時、**downstream の壊れは明示的に acknowledge して別 Task に集約**する書き方にする (Task 6 plan で "Task 14 で吸収" と明記していたのが機能した)
+- Task 15 (E2E smoke) は interface 整合性の最終検知ポイント、ここで `draccus.parse → build_model → build_param_groups → forward → loss.backward()` までチェーンで実行することで残存 interface mismatch を確実に露出させる
+
+---
+
+### #011  `__post_init__` / assertion の tolerance を旧 baseline のまま放置すると mode 切替で即 fail (Task 13)
+
+**現象**:
+Task 13 実装時に draccus で config load → `build_model` → param count assertion で `expected = 675.138 ± 0.5 M` が fail。675.138 は Stage 2 (DinoSigLIP + FiLM あり + PEFT なし) の trainable count で、dual-track redesign 後は Mode A ~546M / Mode B ~541M と全く異なる。
+
+**原因**:
+Task 2 で `film_gen` 削除 (113M 減)、Task 6 で DinoSigLIP 削除 (~400M 減)、Task 8 で WristResNet18 追加 (~12M 増)、Task 12 で LoRA 追加 (~5M、Mode A のみ) と trainable 総数が mode 次第で変動するようになったが、legacy の tight assertion が旧 baseline のままだった。
+
+**対策**:
+- `build_model` 内の tight assertion を **log-only** に変更 (print で mode-aware な値を出力)
+- `VLAAdapterGemma4.__init__` 側の loose bound (500-620 M) は残す (明らかな spec 違反を検知する trap として機能)
+
+**教訓**:
+- mode / feature flag で param 数が変動する設計では **tight equality assertion を避ける**。loose range + log 出力の組合せが保守性と detection を両立
+- Refactor 中の assertion は「過去の正しさ」ではなく「今の契約」を表現すべき。古い baseline を置きっぱなしにすると新 feature 追加のたびに誤陽性になる
+
+---
