@@ -171,6 +171,7 @@ class FinetuneConfig:
     # 両 branch で loader 変更不要 (scene は (B, 3, 224, 224) float [0,255])。DinoSigLIP path は
     # encode_scene 内で PIL 変換を経由するため CPU bound、速度比較では overhead を含む点に注意。
     vision_backbone_type: str = "gemma4_native"
+    siglip_use_tensor_transform: bool = False       # True: PIL 経由なし GPU tensor 直接変換 (SigLIP only 時)
 
     # --- Dual-Track (Task 9) ---
     # 後続 task (10-12) で action_queries / GC / LoRA / torch.no_grad wrap が
@@ -284,7 +285,8 @@ def build_model(cfg: FinetuneConfig, device: torch.device) -> tuple[VLAAdapterGe
         num_pretrain_datasets=cfg.num_pretrain_datasets,   # Stage 3: 0 で disable、>=1 で SoftPromptLibrary 構築
         num_soft_prompt_tokens=cfg.num_soft_prompt_tokens,
         training_mode=cfg.training_mode,                   # Dual-Track (Task 11): "quality" | "speed"
-        vision_backbone_type=cfg.vision_backbone_type,     # Ablation (2026-04-22): "gemma4_native" | "dinosiglip"
+        vision_backbone_type=cfg.vision_backbone_type,     # Ablation (2026-04-22): "gemma4_native" | "dinosiglip" | "siglip"
+        siglip_use_tensor_transform=cfg.siglip_use_tensor_transform,   # SigLIP only: True で GPU tensor 直変換 (no PIL)
     ).to(device, dtype=torch.bfloat16)
     model_vla.train()
 

@@ -126,6 +126,7 @@ class VLAAdapterGemma4(nn.Module):
         siglip_backbone_id: str = "siglip-vit-so400m",
         siglip_resize_strategy: str = "resize-naive",
         siglip_image_size: int = 224,
+        siglip_use_tensor_transform: bool = False,  # True: PIL 経由なし、GPU tensor 直接変換
     ):
         super().__init__()
         assert training_mode in ("quality", "speed"), \
@@ -215,6 +216,7 @@ class VLAAdapterGemma4(nn.Module):
                 f"siglip-vit-so400m expected 256 patches, got {self.num_vision_tokens}. "
                 "loader (NUM_VISION_TOKENS=256) と不整合。"
             )
+            self.siglip_use_tensor_transform = siglip_use_tensor_transform
 
         self.proprio_projector = ProprioProjector(proprio_dim=proprio_dim, llm_dim=llm_dim)
 
@@ -399,6 +401,36 @@ class VLAAdapterGemma4(nn.Module):
         dtype = self.llm.dtype   # bfloat16
         return torch.stack(out_list, dim=0).to(device=device, dtype=dtype)
 
+    def _siglip_transform_batch_gpu(self, scene_images: torch.Tensor) -> torch.Tensor:
+        """No-PIL, GPU-native batch transform (SigLIP-So400m @ 224).
+
+        timm の SigLIP transform pipeline:
+          Resize(248, bicubic, antialias) → CenterCrop(224) → MaybeToTensor → Normalize(0.5, 0.5)
+
+        を torch.nn.functional で GPU 上バッチ一括実行。PIL round-trip なし、
+        per-sample Python loop なし、num_workers=4 parallel な data loader と独立に高速。
+
+        Args:
+            scene_images: (B, 3, H, W) float [0,255] or uint8 (loader 出力)。
+
+        Returns:
+            (B, 3, 224, 224) bf16 on self.llm.device、timm transform と数値的にほぼ一致。
+        """
+        import torch.nn.functional as F
+
+        device = self.llm.device
+        x = scene_images.to(device=device, dtype=torch.float32)
+        # rescale to [0, 1]
+        if x.max() > 2.0:   # uint8 or [0,255] float
+            x = x / 255.0
+        # Resize to 248 (bicubic + antialias、timm default と同仕様)
+        x = F.interpolate(x, size=248, mode="bicubic", antialias=True)
+        # CenterCrop to 224 (248→224、margin (248-224)/2 = 12)
+        x = x[:, :, 12:236, 12:236]
+        # Normalize: (x - 0.5) / 0.5 = 2x - 1
+        x = 2.0 * x - 1.0
+        return x.to(dtype=self.llm.dtype)   # bfloat16
+
     def _encode_scene_siglip(self, scene_images: torch.Tensor) -> torch.Tensor:
         """SigLIP-only ablation path.
 
@@ -408,7 +440,10 @@ class VLAAdapterGemma4(nn.Module):
         Returns:
             h_v: (B, 256, llm_dim) projected tokens. SigLIP backbone frozen、VisionProjector のみ train.
         """
-        pv = self._siglip_transform_batch(scene_images)    # (B, 3, 224, 224) bf16
+        if getattr(self, "siglip_use_tensor_transform", False):
+            pv = self._siglip_transform_batch_gpu(scene_images)  # GPU tensor 直接、no PIL
+        else:
+            pv = self._siglip_transform_batch(scene_images)      # PIL 経由 (legacy、fair 比較用)
 
         with torch.no_grad():
             vision_features = self.vision_backbone(pv)     # (B, 256, 1152) bf16
