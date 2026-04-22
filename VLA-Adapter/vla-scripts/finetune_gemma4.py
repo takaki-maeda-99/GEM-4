@@ -877,12 +877,25 @@ def finetune(cfg: FinetuneConfig) -> None:
             rprint(f"  [WARN] hard_stop_datetime parse 失敗: {e}、deadline check disabled")
 
     # --- Main train loop ---
-    # Escalation #9 (Plan v2 update 2026-04-20):
-    #   Warning:    1000-step rolling mean > 1.29 s/step → print [WARN]
-    #   Escalation: 100-step consecutive mean > 1.72 s/step → raise RuntimeError
+    # Escalation #9 (Plan v2 update 2026-04-20、rev 3 で dual-track 対応 2026-04-22):
+    #   Warning:    1000-step rolling mean > WARN → print [WARN]
+    #   Escalation: 100-step consecutive mean > HALT → raise RuntimeError
     #   step 0 (warmup kernel JIT 3.18 s in Phase 2b 実測) は deque に入れずに除外
-    ESCALATION9_WARN_THRESHOLD = 1.29     # s/step、1000-step rolling mean
-    ESCALATION9_HALT_THRESHOLD = 1.72     # s/step、100-step consecutive mean
+    #
+    # 閾値は training_mode 毎に設定 (Mode A は LoRA+GC で ~2.2 s/step、Mode B は no_grad で ~1.3 s/step):
+    if cfg.training_mode == "quality":
+        # Mode A (LoRA + GC + Gemma4 native vision): 実測 ~2.2 s/step @ B=24 DDP 2-way、
+        # 2 σ overshoot で 3.5 s/step まで許容。
+        ESCALATION9_WARN_THRESHOLD = 2.8
+        ESCALATION9_HALT_THRESHOLD = 3.5
+    elif cfg.training_mode == "speed":
+        # Mode B (no_grad LLM): 実測 ~1.3 s/step @ B=24 DDP 2-way、2 σ overshoot で 2.0 s/step。
+        ESCALATION9_WARN_THRESHOLD = 1.6
+        ESCALATION9_HALT_THRESHOLD = 2.0
+    else:
+        # Stage 2 (legacy DinoSigLIP) fallback、original 閾値維持
+        ESCALATION9_WARN_THRESHOLD = 1.29
+        ESCALATION9_HALT_THRESHOLD = 1.72
     print(f"\n=== Training ({cfg.max_steps} steps) ===")
     step_results = []
     step_times = deque(maxlen=1000)       # Escalation #9 rolling window
