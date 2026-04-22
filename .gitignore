@@ -19,6 +19,13 @@ VLA-Adapter/*
 VLA-Adapter/prismatic/*
 !VLA-Adapter/prismatic/extern/
 !VLA-Adapter/prismatic/vla/
+!VLA-Adapter/prismatic/models/
+VLA-Adapter/prismatic/models/*
+!VLA-Adapter/prismatic/models/backbones/
+VLA-Adapter/prismatic/models/backbones/*
+!VLA-Adapter/prismatic/models/backbones/vision/
+VLA-Adapter/prismatic/models/backbones/vision/*
+!VLA-Adapter/prismatic/models/backbones/vision/wrist_resnet18.py
 VLA-Adapter/prismatic/extern/*
 !VLA-Adapter/prismatic/extern/hf/
 VLA-Adapter/prismatic/extern/hf/*
