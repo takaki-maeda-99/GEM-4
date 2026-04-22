@@ -282,6 +282,30 @@ def build_model(cfg: FinetuneConfig, device: torch.device) -> tuple[VLAAdapterGe
         assert model_vla.action_queries.weight.requires_grad is True, \
             "action_queries should be trainable by default in Mode A"
         model_vla.llm.model.language_model.gradient_checkpointing_enable()
+
+        # Apply LoRA to Gemma 4 LM's attention projections (Task 12)
+        # vision_tower / embed_vision / audio_tower は frozen のまま (scene feature は
+        # pretrained alignment に任せる設計、spec §5.8 参照)
+        from peft import LoraConfig, get_peft_model
+        lora_cfg = LoraConfig(
+            r=cfg.lora_r,
+            lora_alpha=cfg.lora_alpha,
+            target_modules=list(cfg.lora_target_modules),
+            lora_dropout=0.0,
+            bias="none",
+            task_type=None,    # raw Module wrap (not a standard PEFT task)
+        )
+        # Wrap only the text model (language_model), not vision_tower / embed_vision
+        model_vla.llm.model.language_model = get_peft_model(
+            model_vla.llm.model.language_model, lora_cfg
+        )
+        lora_trainable = sum(
+            p.numel() for p in model_vla.llm.model.language_model.parameters() if p.requires_grad
+        ) / 1e6
+        total_trainable_after_lora = sum(p.numel() for p in model_vla.parameters() if p.requires_grad) / 1e6
+        print(f"[mode-A] LoRA wrapped: r={cfg.lora_r}, alpha={cfg.lora_alpha}, "
+              f"targets={tuple(cfg.lora_target_modules)}, LoRA trainable = {lora_trainable:.3f} M")
+        print(f"[mode-A] total trainable (incl LoRA): {total_trainable_after_lora:.3f} M")
         print("[mode-A] action_queries trainable; LLM GC enabled")
     elif cfg.training_mode == "speed":
         # Mode B: action_queries frozen (zero init + requires_grad=False),
