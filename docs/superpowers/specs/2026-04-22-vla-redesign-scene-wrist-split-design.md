@@ -492,10 +492,22 @@ concat 後 seq に一様適用が spec。気になれば soft_prompt/wrist 除�
 - FA (reserved token init): FC が Mode A から >20% loss 劣化時に切替
 - 両方 smoke で先行評価も可
 
-### 9.8 Hardware 制約下での fallback
-- 2 GPU 以上: Mode A / Mode B 並行 pretrain
-- 1 GPU: Mode B 先行 → Mode A 続行 sequential
-- Phase 0 実行時点で hardware 確認要
+### 9.8 Hardware allocation (確認済み: 8 GPUs)
+
+**利用可能 GPU** (`nvidia-smi` 実測):
+- GPU 0, 1: A100 **80GB** PCIe × 2
+- GPU 2-7: A100 **40GB** PCIe × 6
+
+**推奨配分** (Mode A は memory tight なので 80GB に優先的に):
+- **Mode A (Quality pretrain)**: GPU 0, 1, 2, 3 (= 80GB × 2 + 40GB × 2)、**DDP 4-way**
+- **Mode B (Speed pretrain)**: GPU 4, 5, 6, 7 (= 40GB × 4)、**DDP 4-way**
+- 両 Mode を **同時並行で DDP pretrain**、effective batch = per_gpu × 4 で各 mode 独立 run
+
+**Effective batch 見積り**:
+- Mode A: per_gpu=16 × 4 gpus = 64 (grad_accumulation 不要で足りる)
+- Mode B: per_gpu=24-32 × 4 gpus = 96-128
+
+Phase 0 smoke (Week 1 後半) は single GPU で両 mode 切替し基本動作確認、DDP は Phase 2 (Week 2) から。
 
 ## 10. Implementation Phasing (Dual-Track Timeline)
 
@@ -503,7 +515,7 @@ concat 後 seq に一様適用が spec。気になれば soft_prompt/wrist 除�
 |---|---|---|
 | Week 1 前半 (-04-25) | **Phase 0**: 新アーキ実装 (両 Mode 共通 + dual-track flag) | 新 model class、data loader、config 2 本、switch logic |
 | Week 1 後半 (-04-29) | **Phase 0.5**: Mode A/B 両 smoke + batch size 探索 | smoke pass、baseline throughput / loss @ 1k 記録 |
-| Week 2 (-05-06) | **Phase 2**: Mode A / Mode B **並行 pretrain 開始** (Taco) | 両 mode 20k+ step、3 日後に中間 diff 確認 |
+| Week 2 (-05-06) | **Phase 2**: Mode A (GPU 0-3 DDP) / Mode B (GPU 4-7 DDP) **並行 pretrain 開始** (Taco) | 両 mode 20k+ step、3 日後に中間 diff 確認 |
 | Week 3 (-05-13) | **Phase 3**: Pretrain 継続 + LIBERO fine-tune 開始 | pretrain 80k+、LIBERO fine-tune 開始 |
 | Week 4 (-05-18) | **Phase 4**: LIBERO eval + deliverable selection + 提出 | §6.5 基準で勝者決定、Hackathon 提出 |
 
@@ -561,7 +573,7 @@ concat 後 seq に一様適用が spec。気になれば soft_prompt/wrist 除�
 | 18 | **Deliverable selection: LIBERO eval 勝者、差 3% 以内なら Mode B 採用** | ✅ |
 | 19 | Scene soft tokens 140 vs 280 | Open (§9.1) |
 | 20 | LIBERO での soft_prompt_library 扱い | Open (§9.2) |
-| 21 | Hardware 確保次第 parallel vs sequential | Open (§9.8) |
+| 21 | Hardware: 8 GPU (A100 80GB×2 + 40GB×6)、Mode A に 80GB 優先割当、両 mode DDP 4-way 並行 | ✅ (§9.8) |
 
 ---
 
