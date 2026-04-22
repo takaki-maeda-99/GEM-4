@@ -108,17 +108,40 @@ class MLPResNet(nn.Module):
         self.fc2 = nn.Linear(hidden_dim, output_dim)
 
 
-    def forward(self, x, h_a=None, h_t=None, p= None):
- 
-        # x: (batch_size, input_dim)
-        x = self.layer_norm1(x)  # shape: (batch_size, input_dim)
-        x = self.fc1(x)  # shape: (batch_size, hidden_dim)
-        x = self.relu(x)  # shape: (batch_size, hidden_dim)
+    def forward(self, x, h_a=None, h_t=None, p=None, h_w=None, h_sp=None):
+        """X-VLA-style concat-to-x: wrist and soft_prompt join the self-attention pool.
+
+        Args:
+            x:   (B, NUM_ACTIONS_CHUNK, input_dim) action latent
+            h_a: (B, num_layers, K_a, hidden_dim) Bridge adapter hidden
+            h_t: (B, num_layers, K_t, hidden_dim) Bridge task hidden
+            p:   (B, 1, hidden_dim) proprio
+            h_w: (B, 49, hidden_dim) wrist tokens (optional)
+            h_sp:(B, 32, hidden_dim) soft prompt tokens (optional)
+        Returns:
+            (B, NUM_ACTIONS_CHUNK, output_dim)
+        """
+        action_len = x.shape[1]  # remember action token count for trim
+
+        x = self.layer_norm1(x)
+        x = self.fc1(x)
+        x = self.relu(x)
+
+        # Concat aux streams (X-VLA self-attention pool style)
+        if h_w is not None:
+            x = torch.cat([x, h_w], dim=1)
+        if h_sp is not None:
+            x = torch.cat([x, h_sp], dim=1)
+
         for i, block in enumerate(self.mlp_resnet_blocks):
-            x = block(x, h_t = h_t[:,i+1,:], h_a = h_a[:,i+1,:], p=p)  # shape: (batch_size, hidden_dim)
-        x = self.layer_norm2(x)  # shape: (batch_size, hidden_dim)
-        x = self.fc2(x)  # shape: (batch_size, output_dim)
-        return x   
+            x = block(x, h_t=h_t[:, i + 1, :], h_a=h_a[:, i + 1, :], p=p)
+
+        # Trim: keep only action positions
+        x = x[:, :action_len, :]
+
+        x = self.layer_norm2(x)
+        x = self.fc2(x)
+        return x
 
 
 
