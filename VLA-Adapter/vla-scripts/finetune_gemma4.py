@@ -354,7 +354,7 @@ def build_dataloader(cfg: FinetuneConfig, tok) -> DataLoader:
     )
 
 
-def build_pretrain_dataloader(cfg: FinetuneConfig, tok) -> DataLoader:
+def build_pretrain_dataloader(cfg: FinetuneConfig, tok, num_vision_tokens: int = 256) -> DataLoader:
     """Stage 3 pretrain: TacoSoloDataset (Taco Play 単独、Task 14) を DataLoader に包む.
 
     Task 14 (dual-track redesign plan rev 3 §6.1):
@@ -366,6 +366,10 @@ def build_pretrain_dataloader(cfg: FinetuneConfig, tok) -> DataLoader:
       num_workers=4 (cfg.pretrain_num_workers default) で CPU 並列 data prep、
       persistent_workers=True で worker 再 fork コスト排除、prefetch_factor=2。
       TF datasets は worker process 内で lazy init (fork 後安全)。
+
+    Args:
+        num_vision_tokens: VISION placeholder 数 (model.num_vision_tokens を渡す)。
+            max_soft_tokens 変更時の動的対応 (soft=70→64, 140→121, 280→256)。
     """
     sys.path.insert(0, str(REPO_ROOT / "scripts" / "stage3"))
     from taco_solo_loader import TacoSoloDataset, collate_taco_solo
@@ -378,7 +382,7 @@ def build_pretrain_dataloader(cfg: FinetuneConfig, tok) -> DataLoader:
         dataset,
         batch_size=cfg.batch_size,
         sampler=None,
-        collate_fn=collate_taco_solo(tok),
+        collate_fn=collate_taco_solo(tok, num_vision_tokens=num_vision_tokens),
         num_workers=num_workers,
         persistent_workers=(num_workers > 0),
         prefetch_factor=2 if num_workers > 0 else None,
@@ -816,7 +820,10 @@ def finetune(cfg: FinetuneConfig) -> None:
     t0 = time.time()
     if cfg.pretrain_mode:
         rprint(f"  mode: Stage 3 Taco solo pretrain (Task 14)")
-        loader = build_pretrain_dataloader(cfg, tok)
+        # model.num_vision_tokens を loader に注入 (soft_tokens 対応): 64 (soft=70) / 121 (soft=140) / 256 (soft=280)
+        nvt = inner_model.num_vision_tokens
+        rprint(f"  num_vision_tokens (from model): {nvt}")
+        loader = build_pretrain_dataloader(cfg, tok, num_vision_tokens=nvt)
     else:
         rprint(f"  mode: Stage 2 single-dataset ({cfg.data_root_dir})")
         loader = build_dataloader(cfg, tok)

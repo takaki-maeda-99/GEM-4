@@ -63,14 +63,10 @@ from prismatic.vla.constants_gemma4 import (  # noqa: E402
     VISION_PLACEHOLDER_BEGIN_IDX,
 )
 
-# Rev 3 Task 6/14 coupling: NUM_VISION_TOKENS は max_soft_tokens=280 前提の暫定値 (256)。
-# YAML で max_soft_tokens を変更する場合は _build_input_ids の layout も追随が必要。
-# 現状 constants_gemma4.py の値がズレていれば早期 fail させる:
-assert NUM_VISION_TOKENS == 256, (
-    f"taco_solo_loader は NUM_VISION_TOKENS=256 (max_soft_tokens=280) 前提。"
-    f"現在 {NUM_VISION_TOKENS}。max_soft_tokens を変更するなら、VLAAdapterGemma4 の "
-    f"model.num_vision_tokens を loader に注入する caller-injection 設計に移行が必要。"
-)
+# Rev 3 Task 6/14 coupling: NUM_VISION_TOKENS は constants の back-compat 値 (256)、
+# max_soft_tokens=280 前提。本 loader は caller-injection 対応済で、collator 構築時に
+# num_vision_tokens を明示渡す (下記 TacoSoloCollator)。constant は sanity check 用。
+# max_soft_tokens を変える時は build_pretrain_dataloader から model.num_vision_tokens を渡すこと。
 
 # ===========================================================
 # Constants
@@ -269,14 +265,18 @@ class TacoSoloDataset(IterableDataset):
 # ===========================================================
 # Batch transform + collate (tokenize + placeholder、image transform を collate 内で実施)
 # ===========================================================
-def _build_input_ids(tokenizer, language: str) -> torch.Tensor:
+def _build_input_ids(tokenizer, language: str, num_vision_tokens: int = NUM_VISION_TOKENS) -> torch.Tensor:
     """Gemma4BatchTransform と同じ pattern で Gemma 4 tokenize + placeholder 埋め込み.
 
     Layout:
-      [BOS] + prompt(PROMPT_MAX_LEN=20) + VISION_PLACEHOLDERS(256) + [PROPRIO] + ACTION_TOKENS(64) + [EOS]
+      [BOS] + prompt(PROMPT_MAX_LEN=20) + VISION_PLACEHOLDERS(num_vision_tokens) + [PROPRIO] + ACTION_TOKENS(64) + [EOS]
 
     wrist placeholder は含めない (Task 8 以降、WristResNet18 は action_head の concat-to-x で
     入り、LLM 経由しないため input_ids にも含めない)。
+
+    Args:
+        num_vision_tokens: VISION placeholder 数 (default 256 = max_soft_tokens=280)。
+            model.num_vision_tokens を渡して動的対応する (soft=70→64 等)。
     """
     text = f"What action should the robot take to {language.lower().strip()}?"
     ids = tokenizer(text, add_special_tokens=False).input_ids
@@ -288,7 +288,7 @@ def _build_input_ids(tokenizer, language: str) -> torch.Tensor:
     full = (
         [tokenizer.bos_token_id]
         + ids
-        + list(range(VISION_PLACEHOLDER_BEGIN_IDX, VISION_PLACEHOLDER_BEGIN_IDX + NUM_VISION_TOKENS))
+        + list(range(VISION_PLACEHOLDER_BEGIN_IDX, VISION_PLACEHOLDER_BEGIN_IDX + num_vision_tokens))
         + [PROPRIO_PLACEHOLDER_IDX]
         + list(range(ACTION_TOKEN_BEGIN_IDX, ACTION_TOKEN_BEGIN_IDX + NUM_ACTION_TOKENS))
         + [tokenizer.eos_token_id]
@@ -299,11 +299,16 @@ def _build_input_ids(tokenizer, language: str) -> torch.Tensor:
 class TacoSoloCollator:
     """Callable collate: raw sample list → VLAAdapterGemma4-compatible batch dict.
 
-    `DataLoader(collate_fn=TacoSoloCollator(tokenizer))` の形で使う。
+    `DataLoader(collate_fn=TacoSoloCollator(tokenizer, num_vision_tokens=256))` の形で使う。
+
+    Args:
+        tokenizer: Gemma 4 tokenizer
+        num_vision_tokens: VISION placeholder 数 (model.num_vision_tokens と揃える)
     """
 
-    def __init__(self, tokenizer):
+    def __init__(self, tokenizer, num_vision_tokens: int = NUM_VISION_TOKENS):
         self.tokenizer = tokenizer
+        self.num_vision_tokens = num_vision_tokens
 
     def __call__(self, samples: List[Dict[str, Any]]) -> Dict[str, Any]:
         scene_tensors = []
@@ -317,7 +322,7 @@ class TacoSoloCollator:
         for s in samples:
             scene_tensors.append(_scene_to_tensor(s["scene_img"]))
             wrist_tensors.append(_wrist_to_tensor(s["wrist_img"]))
-            input_ids_list.append(_build_input_ids(self.tokenizer, s["language"]))
+            input_ids_list.append(_build_input_ids(self.tokenizer, s["language"], self.num_vision_tokens))
             proprio_list.append(torch.tensor(s["proprio"], dtype=torch.float32))
             actions_list.append(torch.tensor(s["action_chunk"], dtype=torch.float32))
             dataset_id_list.append(int(s["dataset_id"]))
@@ -336,9 +341,14 @@ class TacoSoloCollator:
         }
 
 
-def collate_taco_solo(tokenizer):
-    """Factory: return a collator callable bound to the given tokenizer."""
-    return TacoSoloCollator(tokenizer)
+def collate_taco_solo(tokenizer, num_vision_tokens: int = NUM_VISION_TOKENS):
+    """Factory: return a collator callable bound to the given tokenizer.
+
+    Args:
+        tokenizer: Gemma 4 tokenizer
+        num_vision_tokens: pass model.num_vision_tokens for dynamic alignment
+    """
+    return TacoSoloCollator(tokenizer, num_vision_tokens=num_vision_tokens)
 
 
 # ===========================================================
