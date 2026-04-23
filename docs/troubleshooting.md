@@ -338,7 +338,42 @@ Task 14 で:
 
 ---
 
-### #011  `__post_init__` / assertion の tolerance を旧 baseline のまま放置すると mode 切替で即 fail (Task 13)
+### #012  Mode A (LoRA+GC+native vision) の step time が長時間 run で急激に degrade (2026-04-23)
+
+**現象:**
+Mode A (quality: LoRA r=16 + gradient_checkpointing + Gemma 4 native vision、B=24 DDP 2-way) で pretrain/fine-tune を走らせると、step ~1000-2000 付近で **step time が 2.2 → 5.7 s/step に急激にジャンプ**。gradual ではなく 100 step 以内で 2.6x 程度増加、Escalation #9 で halt。
+
+観測:
+- Medium A (5000 step targeted): step 2968 で halt (~6.95 s/step)
+- diag solo run (3500 step targeted、同 config): step 1943 で halt (~5.69 s/step)
+- 4 runs 同時実行時は step 989 で halt (早い) → contention で degrade trigger が早まる
+- Mode B は 5000 step 安定 (1.28 s/step 不変)
+- **Mode A SigLIP 経路 (vision_backbone_type=siglip) は 2000 step 完走** → native vision tower が degrade trigger の可能性
+
+**原因 (確定してない、候補仮説):**
+可能性排除済:
+- ❌ Memory fragmentation: `torch.cuda.memory_allocated` / `reserved` / `max_allocated` いずれも完全安定 (diag log で 200 step 毎測定、alloc=15.9GB 不変)
+- ❌ Pure thermal throttling: GPU temp 80-82°C で solo / concurrent 同値、temp 自体は degrade 前後で変化なし
+- ❌ Data loader degradation: Mode B は同 loader で degrade しない
+
+可能性残存:
+- **CUDA kernel autotune** (LoRA 計算 path で自動選択が何か閾値を越えてから slow な kernel に切替え)
+- **PyTorch autograd graph の cumulative state** (GC recompute が graph 肥大化、某 step で traverse cost がjump)
+- **DDP `find_unused_parameters=True` の累積 overhead** (毎 iter 全 autograd graph scan、LoRA 分岐で cost 上昇)
+- **System-level bottleneck** (PCIe bus、CPU thread pool、memory bandwidth) で concurrent 時に早く hit
+
+**対策 (暫定):**
+- Mode A は **2000 step 未満の run でまず様子見** (Mode A SigLIP は 2000 step 完走実績)
+- 長期 run 必要な場合は Mode B を主体に
+- 将来: `torch.backends.cudnn.benchmark = False` を試す、`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` 試す、`find_unused_parameters=False` に切替 (LoRA がすべての path を通るなら安全)
+
+**教訓:**
+- step_time の経時 log は必須 (diagnostic 無しでは thermal vs memory vs cuda の切り分け不可)
+- Escalation 閾値は batch_size / mode / hardware 依存で経験則的、事前定義は困難
+- `torch.cuda.memory_stats()` を定期 dump する軽量 instrumentation を keep、長時間 run の trace として価値あり
+
+---
+
 
 **現象**:
 Task 13 実装時に draccus で config load → `build_model` → param count assertion で `expected = 675.138 ± 0.5 M` が fail。675.138 は Stage 2 (DinoSigLIP + FiLM あり + PEFT なし) の trainable count で、dual-track redesign 後は Mode A ~546M / Mode B ~541M と全く異なる。
