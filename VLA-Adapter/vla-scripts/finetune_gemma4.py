@@ -156,6 +156,7 @@ class FinetuneConfig:
     ddp_mode: bool = False
     ddp_backend: str = "nccl"
     ddp_bucket_cap_mb: int = 25                # Phase 3c-0 T3、PyTorch default 25 → 拡大で 5-10% 通信 overhead 減
+    ddp_find_unused_parameters: bool = True    # Mode A degrade 調査用 (#012): False で autograd graph scan overhead 削減試行
 
     # --- Phase 3c-0 optimization knobs (low-risk algorithmic optimizations) ---
     optim_fused: bool = False                  # T1: AdamW(fused=True)、期待 5-15% forward+backward overhead 削減
@@ -863,7 +864,7 @@ def finetune(cfg: FinetuneConfig) -> None:
         #   True 指定で DDP が per-iteration で使用 param を検出、reduction を調整。overhead 5-10% の代償で
         #   architecture 互換性確保。Phase 2i C1 本番 DDP retrain でも同設定。
         model_vla = DDP(model_vla, device_ids=[local_rank], output_device=local_rank,
-                        find_unused_parameters=True,
+                        find_unused_parameters=cfg.ddp_find_unused_parameters,
                         bucket_cap_mb=cfg.ddp_bucket_cap_mb)   # T3: default 25 → 100 で all-reduce overhead 削減
         # NCCL all-reduce scope (trainable のみ、frozen LLM/VB は excluded by DDP spec when requires_grad=False)
         all_reduce_params = sum(p.numel() for p in model_vla.parameters() if p.requires_grad)
