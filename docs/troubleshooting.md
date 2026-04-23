@@ -367,6 +367,32 @@ Mode A (quality: LoRA r=16 + gradient_checkpointing + Gemma 4 native vision、B=
 - 長期 run 必要な場合は Mode B を主体に
 - 将来: `torch.backends.cudnn.benchmark = False` を試す、`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` 試す、`find_unused_parameters=False` に切替 (LoRA がすべての path を通るなら安全)
 
+**原因確定 (2026-04-23 追記):** **CUDA caching allocator の internal fragmentation が根本原因**。
+
+Ablation 結果:
+- `find_unused_parameters=False`: step 1285 で halt (むしろ悪化) ❌
+- `cudnn.benchmark`: default False、元から無効、無関係 ❌
+- input_require_grads hook: `gradient_checkpointing_enable()` が自動追加 + PEFT が追加で hook 計 2 重、正常 ❌
+- **`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`**: **3000 step 完走、degrade 完全消失** ✅
+
+メカニズム:
+- Default segmented-BiN allocator は fixed-size blocks 方式、free block が特定サイズしか再利用可
+- LoRA + GC + 動的活性化 で多様 alloc pattern → block 粒度 mismatch 累積
+- `reserved` 総量は 37.6GB 安定だが **実効 usable 空間が fragment で減り続ける**
+- 某 step で new alloc の free block 探索 cost が急増 (linear search + split/merge overhead) → step time 2.2s → 5.7s に突然 jump
+- Memory 外から見ると "CUDA memory stable なのに遅くなる" という謎症状になる
+
+Fix (採用):
+- 学習 launch 時に `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` env var を必ず設定
+- 副次効果: `reserved` が 37.6 → 30.7GB (-18%) に縮小、memory 効率も向上
+- launch scripts (`scripts/gemma4/launch_pretrain_{quality,speed}.sh`) に永続化
+
+**教訓:**
+- `torch.cuda.memory_allocated/reserved/max_allocated` だけ見てても fragmentation は検知できない (外形値は stable)
+- 徐々に遅くなる症状 + CUDA memory stable + temp normal は **fragmentation 第一候補**
+- PyTorch 2.x の expandable_segments は default OFF (back-compat)、LoRA + GC 系 training では ON が事実上必須
+
+
 **教訓:**
 - step_time の経時 log は必須 (diagnostic 無しでは thermal vs memory vs cuda の切り分け不可)
 - Escalation 閾値は batch_size / mode / hardware 依存で経験則的、事前定義は困難

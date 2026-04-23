@@ -14,6 +14,9 @@ cd "$(dirname "$0")/../.."
 export CUDA_VISIBLE_DEVICES=6,7
 export NCCL_DEBUG=WARN
 export OMP_NUM_THREADS=4
+# 2026-04-23 troubleshooting #012: Mode A (LoRA+GC) 経時劣化 fix。
+# Mode B では degrade 観測してないが、allocator 挙動統一のため両 mode で設定。
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # Different master port to avoid collision with quality launch
 .venv-gemma4/bin/torchrun \
