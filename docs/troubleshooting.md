@@ -416,3 +416,27 @@ Task 2 で `film_gen` 削除 (113M 減)、Task 6 で DinoSigLIP 削除 (~400M �
 - Refactor 中の assertion は「過去の正しさ」ではなく「今の契約」を表現すべき。古い baseline を置きっぱなしにすると新 feature 追加のたびに誤陽性になる
 
 ---
+
+### #013  Mode A の LoRA weights が checkpoint に保存されず、eval が全 0% (2026-04-24)
+
+**現象**:
+Mode A (quality: LoRA r=16 + GC + SigLIP、E4B backbone、LIBERO Spatial 10k finetune) の train loss は健全に収束 (0.62 → 0.13)、Mode B 10k と同等。ところが LIBERO eval で成績が全 task 0-1% に張り付く。Mode B (同 step 数) が 34% 出ているのと極端な差。同じ症状が step 3k preview eval・10k full eval・E2B legacy Mode A B=24 (前 session) の全てで再現。
+
+**原因**:
+`save_checkpoint` の trainable_state フィルタ `if not k.startswith("llm.") and not k.startswith("vision_backbone.")` が、PEFT LoRA wrap 後の key (`llm.model.language_model.base_model.model.layers.N.self_attn.q_proj.lora_A.default.weight` 等) を **frozen LLM と誤認して除外**。結果、ckpt の trainable_state_dict に LoRA weight が 0 個保存される。
+
+eval 側の load check `relevant_missing = [k for k in missing if not k.startswith("llm.") and not k.startswith("vision_backbone.")]` も同じロジックで LoRA missing を silent に許容していたため、assertion が発火せず誰も気付かなかった。
+
+action_head は LoRA-modified LLM 出力を前提に訓練されているが、eval で LoRA delta が zero-init のままだと vanilla LLM 出力を受け取り、出力が完全に train distribution 外 (0-1%)。train 側は LoRA active なので loss は下がる。典型的な silent save bug。
+
+**対策**:
+- `save_checkpoint`: `k.startswith("llm.")` 判定に **`"lora_" in k` の例外**を追加 (save 対象に)
+- `load_model_state` (eval): 同じ修正で missing LoRA を検知 (assert 発火)
+- 既存 Mode A ckpt は全て無効、再訓練必須
+
+**教訓**:
+- `strict=False` + key-prefix filter の組合せは **silent weight 欠落** の温床。要素数・key 名 parity check を一発入れるべきだった
+- 「trainable な params は保存される」という暗黙前提が、PEFT 等の wrap で暗黙前提じゃなくなる。**param が trainable かどうかは `requires_grad` で判定するのが safer**
+- train loss が下がっている ≠ 保存も正しい。save round-trip を smoke に入れるべき (B=2 を 1 step → save → reload → forward 同値 check)
+
+---

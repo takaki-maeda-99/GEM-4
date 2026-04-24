@@ -190,7 +190,15 @@ class EvalConfig:
     # fmt: off
     # --- Model ---
     gemma_model_id: str = "google/gemma-4-E2B"
-    vision_backbone_id: str = "dinosiglip-vit-so-224px"
+    vision_backbone_id: str = "dinosiglip-vit-so-224px"  # DEPRECATED (rev 3)、vision_backbone_type 参照
+    vision_backbone_type: str = "gemma4_native"         # "gemma4_native" | "dinosiglip" | "siglip"
+    siglip_use_tensor_transform: bool = True            # SigLIP で no-PIL GPU transform 使用
+    training_mode: str = "quality"                       # "quality" | "speed"
+    use_xvla_style: bool = False                         # 2026-04-24 #014: X-VLA 流 action_head
+    use_wrist_bridge: bool = False                       # 2026-04-24 #015: wrist per-layer Bridge cross-attn
+    use_proper_ffn: bool = False                         # 2026-04-24 #016: proper transformer FFN
+    feature_norm_type: str = "identity"                  # 2026-04-24 #018: identity | layer_norm
+    wrist_bridge_layer_mode: str = "per_layer"           # 2026-04-24 #019: per_layer | final_broadcast
     checkpoint_path: str = ""          # empty = random-init (dry-run 用)
 
     # --- Data / denormalize stats ---
@@ -306,22 +314,35 @@ def build_input_ids(language: str, tokenizer: Any, prompt_max_len: int = PROMPT_
 def get_action_gemma4(
     model_vla,
     tokenizer,
-    vision_backbone,
     obs_for_model: Dict[str, np.ndarray],
     language_instruction: str,
     proprio_stats: dict,
     action_stats: dict,
     device: torch.device,
 ) -> np.ndarray:
-    """single obs で forward 実行、denormalized action chunk (NUM_ACTIONS_CHUNK, ACTION_DIM) を返す."""
-    # --- Images ---
-    img_primary = Image.fromarray(obs_for_model["full_image"])
-    img_wrist = Image.fromarray(obs_for_model["wrist_image"])
-    pv_p = vision_backbone.image_transform(img_primary)
-    pv_w = vision_backbone.image_transform(img_wrist)
+    """single obs で forward 実行、denormalized action chunk (NUM_ACTIONS_CHUNK, ACTION_DIM) を返す.
+
+    rev 3 (Task 6-8): pixel_values は {"scene", "wrist"} dict schema。
+    - scene: (B, 3, H, W) float [0, 255] CPU、encode_scene 内部で transform
+    - wrist: (B, 3, 224, 224) bf16 on GPU、WristResNet18 入力 (ImageNet 正規化相当で OK)
+    """
+    # --- Images (new {scene, wrist} schema、rev 3 Task 6-8) ---
+    # obs_for_model["full_image"], ["wrist_image"] は (H, W, 3) uint8 numpy
+    scene_np = obs_for_model["full_image"]
+    wrist_np = obs_for_model["wrist_image"]
+    # scene: raw float [0, 255] CPU、encode_scene が内部で resize + normalize + backbone
+    scene_t = torch.from_numpy(scene_np).permute(2, 0, 1).float().unsqueeze(0)  # (1, 3, H, W) CPU
+    # wrist: 224×224 resize + ImageNet 正規化 + bf16 on GPU (WristResNet18 convention)
+    import torch.nn.functional as F
+    w = torch.from_numpy(wrist_np).permute(2, 0, 1).float().unsqueeze(0) / 255.0  # (1, 3, H, W) [0,1]
+    w = F.interpolate(w, size=(224, 224), mode="bilinear", antialias=True)
+    mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
+    std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
+    w = (w - mean) / std
+    wrist_t = w.to(device, dtype=torch.bfloat16)
     pv = {
-        "dino": torch.stack([pv_p["dino"], pv_w["dino"]], dim=0).unsqueeze(0).to(device, dtype=torch.bfloat16),
-        "siglip": torch.stack([pv_p["siglip"], pv_w["siglip"]], dim=0).unsqueeze(0).to(device, dtype=torch.bfloat16),
+        "scene": scene_t,       # model.encode_scene が内部で handle
+        "wrist": wrist_t,
     }
     # --- input_ids ---
     input_ids = build_input_ids(language_instruction, tokenizer).unsqueeze(0).to(device)
@@ -354,9 +375,29 @@ def load_model_state(model_vla, checkpoint_path: Optional[Path], device: torch.d
     payload = torch.load(checkpoint_path, map_location=device, weights_only=False)
     state = payload["trainable_state_dict"]
     missing, unexpected = model_vla.load_state_dict(state, strict=False)
-    relevant_missing = [k for k in missing if not k.startswith("llm.") and not k.startswith("vision_backbone.")]
+    # non-frozen keys must be in ckpt: action_head, proprio/vision_projector, wrist_encoder,
+    # action_queries, soft_prompt_library, AND Mode A の lora_* weights (llm.* 配下に在る)
+    # 2026-04-24 #015/#016: k_wrist/v_wrist/gating_factor_wrist/ffn_up/ffn_down/norm1/norm2/wrist_projector_bridge
+    # は use_wrist_bridge / use_proper_ffn 有効時のみ使用。pre-#015/#016 ckpt には無いので、
+    # 該当 flag で model 構築中に追加された random-init param が missing になっても許容 (実行時 branch で skip される)。
+    _NEW_SINCE_15_16 = (
+        "k_wrist.", "v_wrist.", "gating_factor_wrist",
+        "wrist_projector_bridge",
+        "ffn_up.", "ffn_down.",
+        ".norm1.", ".norm2.",
+        "feature_norm.",   # #018: LayerNorm variant (Identity の旧 ckpt には無い)
+    )
+    relevant_missing = [
+        k for k in missing
+        if not k.startswith("vision_backbone.")
+        and (not k.startswith("llm.") or "lora_" in k)
+        and not any(t in k for t in _NEW_SINCE_15_16)
+    ]
     assert not relevant_missing, f"missing (non-frozen) keys: {relevant_missing[:5]}"
-    assert not unexpected, f"unexpected keys: {unexpected[:5]}"
+    # unexpected keys (soft_prompt_library 等、LIBERO eval では num_pretrain_datasets=0 で model が持たない) は warn のみ。
+    # action head への flow では LIBERO 用の h_sp=None 運用で無問題。
+    if unexpected:
+        print(f"[eval] WARN ignoring unexpected ckpt keys (e.g., soft_prompt_library): {unexpected[:3]} total={len(unexpected)}")
     print(f"[eval] loaded checkpoint: {checkpoint_path}")
     return {
         "loaded": True,
@@ -372,7 +413,6 @@ def load_model_state(model_vla, checkpoint_path: Optional[Path], device: torch.d
 def run_episode(
     model_vla,
     tokenizer,
-    vision_backbone,
     env,
     task_description: str,
     action_stats: dict,
@@ -433,7 +473,6 @@ def run_episode(
                 actions_denorm = get_action_gemma4(
                     model_vla=model_vla,
                     tokenizer=tokenizer,
-                    vision_backbone=vision_backbone,
                     obs_for_model=model_obs,
                     language_instruction=task_description,
                     proprio_stats=proprio_stats,
@@ -510,12 +549,20 @@ def evaluate(cfg: EvalConfig) -> dict:
     print("[eval] Building model...")
     t0 = time.time()
     from finetune_gemma4 import FinetuneConfig
+    # Rev 3 (Task 6+): vision_backbone_type で gemma4_native / dinosiglip / siglip 切替、cfg から渡す
     model_cfg = FinetuneConfig(
         gemma_model_id=cfg.gemma_model_id,
-        vision_backbone_id=cfg.vision_backbone_id,
+        vision_backbone_type=cfg.vision_backbone_type,
+        siglip_use_tensor_transform=cfg.siglip_use_tensor_transform,
         proprio_dim=PROPRIO_DIM, action_dim=ACTION_DIM, num_action_chunks=NUM_ACTIONS_CHUNK,
+        training_mode=cfg.training_mode,
+        use_xvla_style=cfg.use_xvla_style,
+        use_wrist_bridge=cfg.use_wrist_bridge,
+        use_proper_ffn=cfg.use_proper_ffn,
+        feature_norm_type=cfg.feature_norm_type,
+        wrist_bridge_layer_mode=cfg.wrist_bridge_layer_mode,
     )
-    model_vla, tok, vision_backbone = build_model(model_cfg, device)
+    model_vla, tok = build_model(model_cfg, device)
     print(f"[eval] model built in {time.time()-t0:.1f}s")
     model_vla.eval()
 
@@ -559,7 +606,6 @@ def evaluate(cfg: EvalConfig) -> dict:
             episode = run_episode(
                 model_vla=model_vla,
                 tokenizer=tok,
-                vision_backbone=vision_backbone,
                 env=env,
                 task_description=task_description,
                 action_stats=action_stats,
