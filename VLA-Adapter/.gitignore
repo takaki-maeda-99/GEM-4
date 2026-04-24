@@ -151,4 +151,6 @@ data/
 # Rollout videos and wandb logs
 rollouts/
 wandb/
-outputs/
+outputs/*
+!outputs/LIBERO-Spatial-Pro/
+!outputs/LIBERO-Spatial-Pro/dataset_statistics.json

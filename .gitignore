@@ -1,5 +1,5 @@
 # Checkpoints & outputs
-outputs/
+/outputs/
 checkpoint_step_*.pt
 *.ckpt
 
@@ -12,7 +12,9 @@ X-VLA/
 
 # VLA-Adapter: 2026-04-25 より vendored (独立 .git 撤去)、code は全 track。
 # ただし大容量 artifact dir は無視。
-VLA-Adapter/outputs/
+VLA-Adapter/outputs/*
+!VLA-Adapter/outputs/LIBERO-Spatial-Pro/
+!VLA-Adapter/outputs/LIBERO-Spatial-Pro/dataset_statistics.json
 VLA-Adapter/pretrained_models/
 VLA-Adapter/eval_logs/
 VLA-Adapter/experiments/
