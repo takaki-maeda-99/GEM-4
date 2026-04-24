@@ -10,31 +10,17 @@ wandb/
 LIBERO/
 X-VLA/
 
-# VLA-Adapter は upstream reference だが、*gemma4* 追加 file 3 つだけ selective track。
-# 各 level で `dir/*` (= dir 内全 file ignore) + `!subdir/` / `!file.py` で un-ignore の階層構造。
-# 親 dir を完全 ignore してしまうと子 file の un-ignore が効かないため、`*` で contents のみ ignore。
-VLA-Adapter/*
-!VLA-Adapter/prismatic/
-!VLA-Adapter/vla-scripts/
-VLA-Adapter/prismatic/*
-!VLA-Adapter/prismatic/extern/
-!VLA-Adapter/prismatic/vla/
-!VLA-Adapter/prismatic/models/
-VLA-Adapter/prismatic/models/*
-!VLA-Adapter/prismatic/models/action_heads.py
-!VLA-Adapter/prismatic/models/backbones/
-VLA-Adapter/prismatic/models/backbones/*
-!VLA-Adapter/prismatic/models/backbones/vision/
-VLA-Adapter/prismatic/models/backbones/vision/*
-!VLA-Adapter/prismatic/models/backbones/vision/wrist_resnet18.py
-VLA-Adapter/prismatic/extern/*
-!VLA-Adapter/prismatic/extern/hf/
-VLA-Adapter/prismatic/extern/hf/*
-!VLA-Adapter/prismatic/extern/hf/modeling_prismatic_gemma4.py
-VLA-Adapter/prismatic/vla/*
-!VLA-Adapter/prismatic/vla/constants_gemma4.py
-VLA-Adapter/vla-scripts/*
-!VLA-Adapter/vla-scripts/finetune_gemma4.py
+# VLA-Adapter: 2026-04-25 より vendored (独立 .git 撤去)、code は全 track。
+# ただし大容量 artifact dir は無視。
+VLA-Adapter/outputs/
+VLA-Adapter/pretrained_models/
+VLA-Adapter/eval_logs/
+VLA-Adapter/experiments/
+VLA-Adapter/figure/
+VLA-Adapter/rollouts/
+VLA-Adapter/wandb/
+VLA-Adapter/logs/
+VLA-Adapter/vla_adapter.egg-info/
 
 # Local artifacts (大容量、track しない)
 /runs/

@@ -173,6 +173,26 @@ class FinetuneConfig:
     # encode_scene 内で PIL 変換を経由するため CPU bound、速度比較では overhead を含む点に注意。
     vision_backbone_type: str = "gemma4_native"
     siglip_use_tensor_transform: bool = False       # True: PIL 経由なし GPU tensor 直接変換 (SigLIP only 時)
+    # 2026-04-24 #014: action_head style ablation
+    # False (default): Bridge cross-attn (h_a per-layer + h_t per-layer + proprio)
+    # True: X-VLA 流 self-attn pool 単一 (action + scene + wrist + proprio + soft_prompt concat)
+    use_xvla_style: bool = False
+    # 2026-04-24 #015: wrist bridge (option B): SigLIP per-layer tap → MLPResNetBlock_Pro k_wrist/v_wrist cross-attn
+    use_wrist_bridge: bool = False
+    # 2026-04-24 #016: proper transformer FFN (pre-LN + 4× expansion + dual residual) — capacity 強化
+    use_proper_ffn: bool = False
+    # 2026-04-24 #018: feature_norm type for Bridge per-layer h_t/h_a/h_v extraction
+    feature_norm_type: str = "identity"
+    # 2026-04-24 #019: wrist_bridge の SigLIP tap 戦略
+    # "per_layer" (Option B、default): SigLIP 前 25 層を action_head block i に 1:1
+    # "final_broadcast" (Option A、encoder-decoder 標準): SigLIP 最終層を全 block に broadcast
+    wrist_bridge_layer_mode: str = "per_layer"
+    # 2026-04-24: LIBERO fine-tune の data format dispatch
+    # "rlds":    data/modified_libero_rlds/<dataset_name> 配下 RLDS (default、既存)
+    # "lerobot": HF Hub の lerobot/<repo> (lerobot_dataset_repo_id で指定、dataset_name は unnorm_key として流用)
+    data_format: str = "rlds"
+    lerobot_dataset_repo_id: str = "lerobot/libero_spatial_image"
+    lerobot_dataset_statistics_path: str = "VLA-Adapter/outputs/LIBERO-Spatial-Pro/dataset_statistics.json"
 
     # --- Dual-Track (Task 9) ---
     # 後続 task (10-12) で action_queries / GC / LoRA / torch.no_grad wrap が
@@ -210,6 +230,9 @@ class FinetuneConfig:
     pretrain_betas_beta2: float = 0.95        # AdamW beta2 (beta1=0.9 固定、X-VLA 準拠)
     # 5/13 hard deadline (R19)、empty で disabled
     hard_stop_datetime: str = ""              # e.g. "2026-05-13 00:00:00"
+    # Escalation #9 step-time guard: 0.0 で training_mode+batch_size 由来の自動式 (E2B 想定)、
+    # >0 で override。E4B/A4B 等 backbone 変更時は実測 s/step を指定する。
+    escalation9_expected_sec_per_step: float = 0.0
     # fmt: on
 
     def __post_init__(self):
@@ -276,10 +299,17 @@ def build_model(cfg: FinetuneConfig, device: torch.device) -> tuple[VLAAdapterGe
     for p in gemma.parameters():
         p.requires_grad = False
 
+    # 2026-04-24 #018: feature_norm 選択 (Bridge per-layer magnitude drift 補正用)
+    _llm_dim_cfg = gemma.config.text_config.hidden_size
+    if cfg.feature_norm_type == "layer_norm":
+        _feature_norm = torch.nn.LayerNorm(_llm_dim_cfg)
+    else:
+        _feature_norm = torch.nn.Identity()
+
     model_vla = VLAAdapterGemma4(
         gemma_model=gemma,
         max_soft_tokens=cfg.max_soft_tokens,               # Task 13 fixup A: Gemma4ImageProcessor に渡る
-        feature_norm=torch.nn.Identity(),
+        feature_norm=_feature_norm,
         proprio_dim=cfg.proprio_dim,
         action_dim=cfg.action_dim,
         num_action_chunks=cfg.num_action_chunks,
@@ -288,6 +318,10 @@ def build_model(cfg: FinetuneConfig, device: torch.device) -> tuple[VLAAdapterGe
         training_mode=cfg.training_mode,                   # Dual-Track (Task 11): "quality" | "speed"
         vision_backbone_type=cfg.vision_backbone_type,     # Ablation (2026-04-22): "gemma4_native" | "dinosiglip" | "siglip"
         siglip_use_tensor_transform=cfg.siglip_use_tensor_transform,   # SigLIP only: True で GPU tensor 直変換 (no PIL)
+        use_xvla_style=cfg.use_xvla_style,                 # 2026-04-24 #014: X-VLA 流 self-attn pool 単一
+        use_wrist_bridge=cfg.use_wrist_bridge,             # 2026-04-24 #015: wrist per-layer Bridge cross-attn
+        use_proper_ffn=cfg.use_proper_ffn,                 # 2026-04-24 #016: standard pre-LN Transformer block
+        wrist_bridge_layer_mode=cfg.wrist_bridge_layer_mode, # 2026-04-24 #019: per_layer | final_broadcast
     ).to(device, dtype=torch.bfloat16)
     model_vla.train()
 
@@ -304,10 +338,17 @@ def build_model(cfg: FinetuneConfig, device: torch.device) -> tuple[VLAAdapterGe
         # vision_tower / embed_vision / audio_tower は frozen のまま (scene feature は
         # pretrained alignment に任せる設計、spec §5.8 参照)
         from peft import LoraConfig, get_peft_model
+        # 2026-04-24 #018: VLA-Adapter 論文 default は target_modules="all-linear" (string、全 Linear)。
+        # tuple ("all-linear",) で渡した場合 string に unwrap して PEFT に渡す。
+        _tms_cfg = list(cfg.lora_target_modules)
+        if _tms_cfg == ["all-linear"]:
+            _tms = "all-linear"
+        else:
+            _tms = _tms_cfg
         lora_cfg = LoraConfig(
             r=cfg.lora_r,
             lora_alpha=cfg.lora_alpha,
-            target_modules=list(cfg.lora_target_modules),
+            target_modules=_tms,
             lora_dropout=0.0,
             bias="none",
             task_type=None,    # raw Module wrap (not a standard PEFT task)
@@ -355,13 +396,26 @@ def build_dataloader(cfg: FinetuneConfig, tok, num_vision_tokens: int = 256) -> 
     """
     sys.path.insert(0, str(REPO_ROOT / "scripts" / "gemma4"))
     from libero_loader import LiberoDataset, collate_libero
-    dataset = LiberoDataset(
-        data_dir=str(REPO_ROOT / cfg.data_root_dir),
-        dataset_name=cfg.dataset_name,
-        num_actions_chunk=cfg.num_action_chunks,
-        shuffle_buffer_size=cfg.shuffle_buffer_size,
-        train=True,
-    )
+
+    data_format = getattr(cfg, "data_format", "rlds")
+    if data_format == "rlds":
+        dataset = LiberoDataset(
+            data_dir=str(REPO_ROOT / cfg.data_root_dir),
+            dataset_name=cfg.dataset_name,
+            num_actions_chunk=cfg.num_action_chunks,
+            shuffle_buffer_size=cfg.shuffle_buffer_size,
+            train=True,
+        )
+    elif data_format == "lerobot":
+        from lerobot_libero_loader import LeRobotLiberoDataset
+        dataset = LeRobotLiberoDataset(
+            repo_id=cfg.lerobot_dataset_repo_id,
+            dataset_statistics_path=cfg.lerobot_dataset_statistics_path,
+            unnorm_key=cfg.dataset_name,          # "libero_spatial_no_noops" 等、stats key と共用
+            action_chunk_len=cfg.num_action_chunks,
+        )
+    else:
+        raise ValueError(f"data_format must be 'rlds' or 'lerobot', got {data_format!r}")
     # pretrain_num_workers を流用 (fine-tune でも同じ data pipeline 性質: RLDS が内部
     # parallelism を持つため workers=0 が安全、必要なら YAML 側で pretrain_num_workers=0)。
     num_workers = getattr(cfg, "pretrain_num_workers", 0)
@@ -443,6 +497,10 @@ def build_param_groups(model, cfg: FinetuneConfig) -> list:
     _collect(model.wrist_encoder, "wrist_encoder", base_lr)
     _collect(model.proprio_projector, "proprio_projector", base_lr)
     _collect(model.action_head, "action_head", base_lr)
+    # 2026-04-24 #015 option B: wrist_projector_bridge は use_wrist_bridge=True で生成、それ以外 None
+    _collect(getattr(model, "wrist_projector_bridge", None), "wrist_projector_bridge", base_lr)
+    # 2026-04-24 #018: feature_norm が LayerNorm の場合 trainable 2×llm_dim、Identity は param 無し
+    _collect(getattr(model, "feature_norm", None), "feature_norm", base_lr)
 
     # --- DinoSigLIP ablation path (2026-04-22): vision_projector が random init で存在 ---
     # gemma4_native path では model.vision_projector is None (collect は no-op)。
@@ -595,10 +653,13 @@ def save_checkpoint(
       - current_lr (sanity check 用)
       - cfg (dict 化、resume 時の config drift 検出)
     """
-    # LLM と vision_backbone は frozen、再 load 時は pretrained から初期化するため保存不要
+    # LLM と vision_backbone は frozen base、再 load 時は pretrained から初期化するため保存不要。
+    # ただし Mode A は PEFT LoRA を llm.model.language_model.base_model 配下に挟むため、
+    # "lora_" を含む key (例: ....lora_A.default.weight) は保存対象。
     trainable_state = {
         k: v for k, v in model_vla.state_dict().items()
-        if not k.startswith("llm.") and not k.startswith("vision_backbone.")
+        if not k.startswith("vision_backbone.")
+        and (not k.startswith("llm.") or "lora_" in k)
     }
     payload = {
         "trainable_state_dict": trainable_state,
@@ -936,7 +997,11 @@ def finetune(cfg: FinetuneConfig) -> None:
     #   quality: 実測 2.2s@B=24, 5.5s@B=64 → base≈0.3s + 0.082s/sample
     #   speed:   実測 1.3s@B=24 → base≈0.2s + 0.046s/sample (B=64 推定 3.1s)
     # 閾値は expected の 1.3x (WARN) / 2.5x (HALT) と generous に (batch 揃ってれば overshoot 稀)
-    if cfg.training_mode == "quality":
+    if cfg.escalation9_expected_sec_per_step > 0:
+        _expected = cfg.escalation9_expected_sec_per_step
+        ESCALATION9_WARN_THRESHOLD = _expected * 1.3
+        ESCALATION9_HALT_THRESHOLD = _expected * 2.5
+    elif cfg.training_mode == "quality":
         _expected = 0.3 + 0.082 * cfg.batch_size
         ESCALATION9_WARN_THRESHOLD = _expected * 1.3
         ESCALATION9_HALT_THRESHOLD = _expected * 2.5

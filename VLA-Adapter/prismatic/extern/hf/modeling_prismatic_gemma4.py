@@ -127,6 +127,22 @@ class VLAAdapterGemma4(nn.Module):
         siglip_resize_strategy: str = "resize-naive",
         siglip_image_size: int = 224,
         siglip_use_tensor_transform: bool = False,  # True: PIL 経由なし、GPU tensor 直接変換
+        # --- 2026-04-24 #014: X-VLA 流 action_head ablation ---
+        # True: self-attn pool 単一化、scene + wrist + proprio を全部 action queries と self-attn
+        # False: 既存 Bridge cross-attn 経路 (h_a/h_t per-layer cross-attn)
+        use_xvla_style: bool = False,
+        # --- 2026-04-24 #015: wrist bridge (option B) ---
+        # True: wrist を SigLIP (scene と frozen 共有) に通し、per-layer hidden を tap して
+        # MLPResNetBlock_Pro の 4 本目 cross-attn stream (k_wrist/v_wrist) に供給。
+        use_wrist_bridge: bool = False,
+        # --- 2026-04-24 #016: proper transformer FFN ---
+        # True: MLPResNetBlock_Pro の FFN を pre-LN + 4× expansion + dual residual に昇格 (標準 Transformer block)
+        # False (default): legacy (LayerNorm + Linear D→D + ReLU、residual 置換)
+        use_proper_ffn: bool = False,
+        # --- 2026-04-24 #019: wrist_bridge layer tap mode ---
+        # "per_layer" (default、Option B): SigLIP 前 25 層を block i に 1:1 mapping で渡す
+        # "final_broadcast" (Option A、encoder-decoder 教科書通り): SigLIP 最終層を全 block に broadcast
+        wrist_bridge_layer_mode: str = "per_layer",
     ):
         super().__init__()
         assert training_mode in ("quality", "speed"), \
@@ -224,6 +240,22 @@ class VLAAdapterGemma4(nn.Module):
         from prismatic.models.backbones.vision.wrist_resnet18 import WristResNet18
         self.wrist_encoder = WristResNet18(out_dim=llm_dim)
 
+        # --- Wrist Bridge (2026-04-24 #015, option B) ---
+        # SigLIP (scene と frozen 共有) を wrist にも適用、25 layer per-layer tap して
+        # MLPResNetBlock_Pro の k_wrist/v_wrist stream に供給。共有 projector。
+        self.use_wrist_bridge = use_wrist_bridge
+        assert wrist_bridge_layer_mode in ("per_layer", "final_broadcast"), \
+            f"wrist_bridge_layer_mode must be 'per_layer' or 'final_broadcast', got {wrist_bridge_layer_mode!r}"
+        self.wrist_bridge_layer_mode = wrist_bridge_layer_mode
+        if use_wrist_bridge:
+            assert vision_backbone_type == "siglip", \
+                f"use_wrist_bridge requires vision_backbone_type='siglip', got {vision_backbone_type!r}"
+            # vision_projector と同じ 2-layer MLP ではなく、単純な Linear で llm_dim に射影
+            # (層ごとに feature distribution が違うため共有は粗いが、MVP として許容)
+            self.wrist_projector_bridge = nn.Linear(vision_embed_dim, llm_dim)
+        else:
+            self.wrist_projector_bridge = None
+
         self.action_queries = nn.Embedding(NUM_ACTION_TOKENS, llm_dim)
         self.action_queries.weight.data.zero_()
 
@@ -235,7 +267,10 @@ class VLAAdapterGemma4(nn.Module):
             action_dim=action_dim,
             num_task_tokens=self.num_vision_tokens,
             use_pro_version=True,
+            use_xvla_style=use_xvla_style,
+            use_proper_ffn=use_proper_ffn,
         )
+        self.use_xvla_style = use_xvla_style
 
         self._num_action_chunks = num_action_chunks
 
@@ -252,14 +287,26 @@ class VLAAdapterGemma4(nn.Module):
             self.soft_prompt_library = None
 
         # --- Trainable param count (Task 8: wrist_encoder ~12M added) ---
-        # 実測: ~541 M (ActionHead ~528M + ProprioProjector + action_queries + WristResNet18 + SoftPromptLibrary)
+        # E2B (llm_dim=1536): ~541 M (ActionHead ~528M + ProprioProjector + action_queries + WristResNet18 + SoftPromptLibrary)
         # DinoSigLIP ablation path では VisionProjector (~32M) が加わり ~573M になる。
-        # 幅広の sanity range (500-660 M) に留め、exact な 577M 仮説には tie しない。
+        # ActionHead は num_blocks × (hidden=llm_dim) の MLP-ResNet で llm_dim^2 に比例するため、
+        # E4B (2560) / 26B A4B (2816) では param 数も大きくスケールする。
         total_trainable = sum(p.numel() for p in self.parameters() if p.requires_grad) / 1e6
         print(f"[VLAAdapterGemma4] trainable params: {total_trainable:.3f} M "
-              f"(vision_backbone_type={self.vision_backbone_type})")
-        assert 500.0 < total_trainable < 660.0, \
-            f"trainable params out of expected range: got {total_trainable:.3f} M (expected ~541M baseline)"
+              f"(vision_backbone_type={self.vision_backbone_type}, llm_dim={llm_dim}, "
+              f"use_xvla_style={use_xvla_style}, use_wrist_bridge={use_wrist_bridge}, "
+              f"use_proper_ffn={use_proper_ffn})")
+        _scale = (llm_dim / 1536.0) ** 2  # ActionHead dominates and scales as llm_dim^2
+        # option (a) = Bridge 維持 + scene concat (新規 param なし)、
+        # option B (#015) = wrist_bridge で +115M (E2B)、
+        # option #016 = proper FFN で +400M (E2B、4× expansion × 24 block)
+        _lower = 400.0 * _scale
+        _upper = 750.0 * _scale
+        if use_proper_ffn:
+            _upper = 1300.0 * _scale
+        assert _lower < total_trainable < _upper, \
+            f"trainable params out of expected range: got {total_trainable:.3f} M " \
+            f"(expected {_lower:.0f}-{_upper:.0f} M for llm_dim={llm_dim})"
 
     # -----------------------------------------------------------------
     # 便宜 property
@@ -476,9 +523,42 @@ class VLAAdapterGemma4(nn.Module):
         scene_imgs = pixel_values["scene"] if isinstance(pixel_values, dict) else pixel_values
         h_v = self.encode_scene(scene_imgs)                # (B, num_vision_tokens, llm_dim)
 
-        # ---- Wrist features (Task 8: trainable ResNet18, bypasses frozen LLM) ----
+        # ---- Wrist features ----
         wrist_pixel_values = pixel_values["wrist"]         # (B, 3, 224, 224) bf16 on GPU
-        h_w = self.wrist_encoder(wrist_pixel_values)       # (B, 49, llm_dim)
+        h_w = self.wrist_encoder(wrist_pixel_values)       # (B, 49, llm_dim) (ResNet18 path、self-attn pool 用)
+
+        # 2026-04-24 #015 option B: wrist を SigLIP 25 layer tap、per-layer projector で h_w_bridge 組立
+        h_w_bridge = None
+        if self.use_wrist_bridge:
+            # Wrist を SigLIP 前処理 (scene と同じ pipeline を再利用)
+            if getattr(self, "siglip_use_tensor_transform", False):
+                wrist_pv_siglip = self._siglip_transform_batch_gpu(wrist_pixel_values.float())
+            else:
+                wrist_pv_siglip = self._siglip_transform_batch(wrist_pixel_values.float())
+            # timm VisionTransformer の get_intermediate_layers: n=layer indices list で per-layer 出力取得
+            NUM_BRIDGE_LAYERS = 25  # action_head 24 block + layer 0、hidden_subset と symmetric
+            # 2026-04-24 #019: layer mode 分岐
+            if self.wrist_bridge_layer_mode == "per_layer":
+                # Option B default: 前 25 層を block i に 1:1 mapping
+                with torch.no_grad():
+                    per_layer_feats = self.vision_backbone.featurizer.get_intermediate_layers(
+                        wrist_pv_siglip, n=list(range(NUM_BRIDGE_LAYERS))
+                    )
+                stacked = torch.stack(per_layer_feats, dim=1)  # (B, num_layers=25, 256, 1152)
+            else:  # "final_broadcast"
+                # Option A: SigLIP 最終層を全 block に broadcast (encoder-decoder 教科書)
+                # timm get_intermediate_layers は重複 index を dedup するので、単層取得後に expand
+                num_siglip_blocks = len(self.vision_backbone.featurizer.blocks)
+                final_idx = num_siglip_blocks - 1   # SigLIP-So400m = 27 blocks → idx 26
+                with torch.no_grad():
+                    final_feats = self.vision_backbone.featurizer.get_intermediate_layers(
+                        wrist_pv_siglip, n=[final_idx]
+                    )
+                single = final_feats[0]   # (B, 256, 1152)
+                # (B, 1, 256, 1152) → broadcast-expand → (B, num_layers, 256, 1152) (memory 共有)
+                stacked = single.unsqueeze(1).expand(-1, NUM_BRIDGE_LAYERS, -1, -1).contiguous()
+            # projector → (B, num_layers, 256, llm_dim)
+            h_w_bridge = self.wrist_projector_bridge(stacked)
 
         # ---- PLE 事前計算 (OOM 回避) ----
         with torch.no_grad():
@@ -536,18 +616,25 @@ class VLAAdapterGemma4(nn.Module):
                 position_ids=position_ids,
             )
 
-        # ---- Action head input 組み立て (entries 0-24) ----
-        all_hidden = torch.stack(out.hidden_states, dim=1)              # (B, 36, L_total, llm_dim)
-        hidden_subset = all_hidden[:, :25, :, :]                        # (B, 25, L_total, llm_dim)
-
+        # ---- Action head input 組み立て ----
         # batch 内で placeholder 位置は共通と仮定 (LIBERO は固定 layout)。
-        # Soft Prompt を LLM 入力に concat しなくなったため offset 加算は不要 (rev 3 Task 7)。
         apos0 = amask[0].nonzero(as_tuple=True)[0]
         vpos0 = vmask[0].nonzero(as_tuple=True)[0]
+
+        # Bridge per-layer stack (25 層) は常に構築 (h_a, h_t cross-attn に使う)
+        all_hidden = torch.stack(out.hidden_states, dim=1)              # (B, 36, L_total, llm_dim)
+        hidden_subset = all_hidden[:, :25, :, :]                        # (B, 25, L_total, llm_dim)
 
         vision_hidden = self.feature_norm(hidden_subset[:, :, vpos0, :])  # (B, 25, num_vision_tokens, llm_dim)
         action_hidden = self.feature_norm(hidden_subset[:, :, apos0, :])  # (B, 25, 64, llm_dim)
         combined = torch.cat([vision_hidden, action_hidden], dim=2)       # (B, 25, N_v+64, llm_dim)
+
+        # 2026-04-24 #014 revised option (a): Bridge 維持 + scene concat
+        # use_xvla_style=True の場合のみ、final-layer scene tokens を self-attn pool に足すための h_v を追加抽出
+        h_v = None
+        if self.use_xvla_style:
+            final_hidden = out.hidden_states[-1]                          # (B, L_total, llm_dim)
+            h_v = self.feature_norm(final_hidden[:, vpos0, :])            # (B, num_vision_tokens, llm_dim)
 
         predicted = self.action_head.predict_action(
             actions_hidden_states=combined,
@@ -556,6 +643,8 @@ class VLAAdapterGemma4(nn.Module):
             phase="Training" if self.training else "Inference",
             h_w=h_w,
             h_sp=h_sp,
+            h_v=h_v,
+            h_w_bridge=h_w_bridge,   # 2026-04-24 #015 option B: per-layer wrist cross-attn
         )
 
         if actions is None:
