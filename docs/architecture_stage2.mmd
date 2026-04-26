@@ -8,7 +8,7 @@ flowchart TB
     subgraph Inputs["Inputs (per batch)"]
         direction LR
         PV["pixel_values<br/>{dino, siglip} × {primary, wrist}<br/>B×2×3×224×224"]
-        IDS["input_ids<br/>B×L=599<br/>[BOS]+prompt(20)+V(512)+P+A(64)+[EOS]"]
+        IDS["input_ids<br/>B×L=599<br/>[BOS]+V(512)+prompt(20)+P+A(64)+[EOS]<br/>(2026-04-26 vision-first)"]
         PROP["proprio<br/>B×8"]
         ACT["actions (GT)<br/>B×8×7<br/>BOUNDS_Q99 normalized"]
     end

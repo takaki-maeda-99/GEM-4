@@ -9,8 +9,8 @@ Task 14: Taco Play 単独 pretrain loader (dual-track redesign plan rev 3, §6.1
     * wrist は ImageNet 正規化済 float tensor (WristResNet18 用)
   - Canonical 7-dim action (Phase 3a-2 と整合)、BOUNDS_Q99 normalize
   - action chunking 8-step sliding window (残り不足は複製、X-VLA 原実装 behavior 準拠)
-  - input_ids layout (Task 6/8 以降):
-      [BOS] + prompt(20) + VISION_PLACEHOLDERS(NUM_VISION_TOKENS=256) + [PROPRIO] + ACTION_TOKENS(64) + [EOS]
+  - input_ids layout (2026-04-26 vision-first 入れ替え、Task 6/8 以降):
+      [BOS] + VISION_PLACEHOLDERS(NUM_VISION_TOKENS=256) + prompt(20) + [PROPRIO] + ACTION_TOKENS(64) + [EOS]
     * wrist placeholder は input_ids に含めない (WristResNet18 は action_head の concat-to-x で入る、LLM 経由しない)
   - dataset_id は 0 固定 (taco_play 1 種)
 
@@ -287,8 +287,8 @@ def _build_input_ids(tokenizer, language: str, num_vision_tokens: int = NUM_VISI
         ids = ids + pad
     full = (
         [tokenizer.bos_token_id]
-        + ids
         + list(range(VISION_PLACEHOLDER_BEGIN_IDX, VISION_PLACEHOLDER_BEGIN_IDX + num_vision_tokens))
+        + ids
         + [PROPRIO_PLACEHOLDER_IDX]
         + list(range(ACTION_TOKEN_BEGIN_IDX, ACTION_TOKEN_BEGIN_IDX + NUM_ACTION_TOKENS))
         + [tokenizer.eos_token_id]

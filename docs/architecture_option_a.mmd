@@ -8,7 +8,7 @@ flowchart TB
         direction LR
         SCENE["scene image<br/>B×3×224×224"]
         WRIST["wrist image<br/>B×3×224×224"]
-        IDS["input_ids<br/>B×L=343<br/>[BOS]+prompt(20)+V(256)+P+A(64)+[EOS]"]
+        IDS["input_ids<br/>B×L=343<br/>[BOS]+V(256)+prompt(20)+P+A(64)+[EOS]<br/>(2026-04-26 vision-first)"]
         PROP["proprio<br/>B×8"]
         ACT["actions (GT)<br/>B×8×7<br/>(BOUNDS_Q99 normalized)"]
     end

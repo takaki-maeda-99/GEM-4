@@ -262,8 +262,8 @@ class MultiDatasetPretrainDataset(IterableDataset):
             ids = ids + pad
         full = (
             [self.tokenizer.bos_token_id]
-            + ids
             + list(range(VISION_PLACEHOLDER_BEGIN_IDX, VISION_PLACEHOLDER_BEGIN_IDX + NUM_VISION_TOKENS))
+            + ids
             + [PROPRIO_PLACEHOLDER_IDX]
             + list(range(ACTION_TOKEN_BEGIN_IDX, ACTION_TOKEN_BEGIN_IDX + NUM_ACTION_TOKENS))
             + [self.tokenizer.eos_token_id]

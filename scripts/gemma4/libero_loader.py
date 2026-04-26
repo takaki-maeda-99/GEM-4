@@ -243,9 +243,9 @@ class LiberoDataset(IterableDataset):
 # Batch transform + collate
 # ===========================================================
 def _build_input_ids(tokenizer, language: str, num_vision_tokens: int = NUM_VISION_TOKENS) -> torch.Tensor:
-    """Layout:
-      [BOS] + prompt(PROMPT_MAX_LEN=20) + VISION_PLACEHOLDERS(num_vision_tokens)
-      + [PROPRIO] + ACTION_TOKENS(NUM_ACTION_TOKENS=64) + [EOS]
+    """Layout (2026-04-26 vision-first 入れ替え; env var で旧 prompt-first にも切替可):
+      default:                  [BOS] + V(num_vision_tokens) + prompt(20) + [PROPRIO] + A(64) + [EOS]
+      VLA_OLD_PROMPT_FIRST=1:   [BOS] + prompt(20) + V(num_vision_tokens) + [PROPRIO] + A(64) + [EOS]
     """
     text = f"What action should the robot take to {language.lower().strip()}?"
     ids = tokenizer(text, add_special_tokens=False).input_ids
@@ -254,10 +254,13 @@ def _build_input_ids(tokenizer, language: str, num_vision_tokens: int = NUM_VISI
     else:
         pad = [tokenizer.pad_token_id] * (PROMPT_MAX_LEN - len(ids))
         ids = ids + pad
+    vision_block = list(range(VISION_PLACEHOLDER_BEGIN_IDX, VISION_PLACEHOLDER_BEGIN_IDX + num_vision_tokens))
+    if os.environ.get("VLA_OLD_PROMPT_FIRST", "0") == "1":
+        head = [tokenizer.bos_token_id] + ids + vision_block
+    else:
+        head = [tokenizer.bos_token_id] + vision_block + ids
     full = (
-        [tokenizer.bos_token_id]
-        + ids
-        + list(range(VISION_PLACEHOLDER_BEGIN_IDX, VISION_PLACEHOLDER_BEGIN_IDX + num_vision_tokens))
+        head
         + [PROPRIO_PLACEHOLDER_IDX]
         + list(range(ACTION_TOKEN_BEGIN_IDX, ACTION_TOKEN_BEGIN_IDX + NUM_ACTION_TOKENS))
         + [tokenizer.eos_token_id]

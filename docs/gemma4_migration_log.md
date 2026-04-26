@@ -2120,3 +2120,50 @@ Phase 3b-4 DDP 4-GPU で throughput scaling 1.05x のみ発覚 → Phase 3c-0 �
 - 初期観測 (step ~1000): loss 0.14-0.22 range、freeze phase 収束、sp_gn 非ゼロ active
 
 Phase 2e (GPU 0) / Phase 3c-1 (GPU 2-3) / moriki (GPU 1) 3 job 並列、GPU 4-7 idle (Phase 2f rollout の際に活用)。
+
+---
+
+## 2026-04-26: input_ids layout 入れ替え (vision-first ablation)
+
+### 動機
+
+- 現状 layout: `[BOS] + prompt(20) + V(256) + [PROPRIO] + A(64) + [EOS]` (prompt-first)
+- 標準 VLM (PaliGemma / LLaVA / OpenVLA) は **vision-first** が慣例
+- Gemma 4 事前学習分布とのミスマッチが性能を下げている可能性
+
+### 変更
+
+新 layout (default): `[BOS] + V(256) + prompt(20) + [PROPRIO] + A(64) + [EOS]`
+
+修正 4 ファイル (loader 側のみ、modeling は ID-based 検出で layout-agnostic):
+- `scripts/gemma4/libero_loader.py`
+- `scripts/gemma4/eval_libero_gemma4.py`
+- `scripts/stage3/taco_solo_loader.py`
+- `scripts/stage3/multi_dataset_loader.py`
+
+`libero_loader._build_input_ids` には `VLA_OLD_PROMPT_FIRST=1` env var で旧 layout に切替可能 (ablation 用)。
+
+### 1000-step smoke 比較 (LIBERO Spatial、B=4、同 seed、GPU 2/3 並列)
+
+両 run の条件: `--smoke_mode True --smoke_max_steps 1000 --batch_size 4 --smoke_run_resume_check False`
+
+| Metric | A (prompt-first) | B (vision-first) | diff (B-A) |
+|---|---|---|---|
+| median step sec | 0.744 | 0.727 | -2.1% (誤差) |
+| loss [0, 1000) mean | 0.3273 | 0.3160 | **-0.011** |
+| loss [500, 700) mean | 0.3038 | 0.2903 | -0.014 |
+| loss last 200-step mean | 0.2720 | 0.2616 | -0.010 |
+| Welch t-test (500-1000) | t=3.19, **p=0.0015** | | 有意 |
+
+全 5 window で B が一貫して低い (符号 100% 一致)、p=0.0015 で統計的に有意。効果量は小さいが (~3-5% loss 改善) 方向性明確。
+
+### 採用判断
+
+- vision-first を default として採用 (loader 修正をそのまま維持)
+- env var `VLA_OLD_PROMPT_FIRST` は ablation 用に保持
+- Architecture diagram (`docs/architecture_stage2.mmd`, `docs/architecture_option_a.mmd`) 更新済
+- Phase 1c 本番学習 (10k+ steps) で差が拡大するか後追い観測
+
+### 既存 checkpoint の扱い
+
+旧 layout で訓練した checkpoint は **layout 変更で RoPE 位置が変わるため再利用不可**。Phase 2e/2f 等の既存 ckpt は新 layout と互換性なし。継続学習時は要再訓練。

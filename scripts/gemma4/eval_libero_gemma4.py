@@ -199,6 +199,11 @@ class EvalConfig:
     use_proper_ffn: bool = False                         # 2026-04-24 #016: proper transformer FFN
     feature_norm_type: str = "identity"                  # 2026-04-24 #018: identity | layer_norm
     wrist_bridge_layer_mode: str = "per_layer"           # 2026-04-24 #019: per_layer | final_broadcast
+    num_action_head_blocks: int = 24                     # 2026-04-25 #021: action_head の block 数 (24=paper、35=Gemma4 全層)
+    # LoRA config (Mode A ckpt load 時必須、ckpt の LoRA shape と一致させる)
+    lora_r: int = 16
+    lora_alpha: int = 32
+    lora_target_modules: Tuple[str, ...] = ("q_proj", "k_proj", "v_proj", "o_proj")
     checkpoint_path: str = ""          # empty = random-init (dry-run 用)
 
     # --- Data / denormalize stats ---
@@ -302,8 +307,8 @@ def build_input_ids(language: str, tokenizer: Any, prompt_max_len: int = PROMPT_
         ids = ids + pad
     full = (
         [tokenizer.bos_token_id]
-        + ids
         + list(range(VISION_PLACEHOLDER_BEGIN_IDX, VISION_PLACEHOLDER_BEGIN_IDX + NUM_VISION_TOKENS))
+        + ids
         + [PROPRIO_PLACEHOLDER_IDX]
         + list(range(ACTION_TOKEN_BEGIN_IDX, ACTION_TOKEN_BEGIN_IDX + NUM_ACTION_TOKENS))
         + [tokenizer.eos_token_id]
@@ -561,6 +566,10 @@ def evaluate(cfg: EvalConfig) -> dict:
         use_proper_ffn=cfg.use_proper_ffn,
         feature_norm_type=cfg.feature_norm_type,
         wrist_bridge_layer_mode=cfg.wrist_bridge_layer_mode,
+        num_action_head_blocks=cfg.num_action_head_blocks,
+        lora_r=cfg.lora_r,
+        lora_alpha=cfg.lora_alpha,
+        lora_target_modules=cfg.lora_target_modules,
     )
     model_vla, tok = build_model(model_cfg, device)
     print(f"[eval] model built in {time.time()-t0:.1f}s")
