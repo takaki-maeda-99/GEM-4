@@ -363,7 +363,20 @@ git lfs install && git lfs pull            # CAD_Library の STEP / SLDASM を�
 
 ### 現状の安全措置
 
+- **物理 E-stop (緊急停止)**: <!-- TODO: ボタン位置 / 応答 latency / 停止トルク を実機計測後に記入 -->
+- **ソフトウェア watchdog**: replay path で joint position jump / velocity / acceleration の三段ゲート (`MimicRec/configs/robot/<robot>.yaml` の `replay:` ブロック)。 daemon 側でも追加 clamp あり (`configs/rebotarm_daemon.yaml` の `safety:`)
+- **Soft stop (graceful halt)**: <!-- TODO: 「stop」 / 「止まって」 音声トリガでのソフト停止挙動を実装後に記入 -->
+- **Action rate limit**: <!-- TODO: 実機での EE Δ 上限と gripper 速度上限を計測後に記入 -->
+- **Operator presence**: 実機デモセッションでは E-stop に手が届く距離にオペレーターを必ず配置
+
 ### Scope (何であって何でないか)
+
+- これは **研究プロトタイプ**であり、 医療機器でも認証された支援機器でもありません。
+- 表示している実機デモはすべて **operator-supervised** です。 上記の安全措置がセッション必須前提。
+- **無監視の家庭内運用は明確にスコープ外**です。
+- カメラ・音声データは既定で全部 on-device に留まり、 runtime path はクラウド送信を行いません。
+- 想定する補助は **operator が意識を保ち、 システムを停止できる状態下での** 単一タスク・短水平のマニピュレーションです。
+- accessibility 認証・規制承認・臨床的有効性は **主張しません**。
 
 ## Status & Roadmap
 

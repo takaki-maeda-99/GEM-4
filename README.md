@@ -363,7 +363,20 @@ Three entry points:
 
 ### Current safety measures
 
+- **Physical emergency stop (E-stop)**: <!-- TODO: button position / response latency / stopping torque, to be filled in after on-robot measurement -->
+- **Software watchdog**: replay path enforces a triple gate on joint position jump / velocity / acceleration (`MimicRec/configs/robot/<robot>.yaml` `replay:` block); the daemon adds further `safety:` clamps in `configs/rebotarm_daemon.yaml`
+- **Soft stop (graceful halt)**: <!-- TODO: define behavior triggered by spoken "stop" / "止まって" once implemented -->
+- **Action rate limit**: <!-- TODO: maximum EE Δ per step and gripper velocity, to be measured on-robot -->
+- **Operator presence**: every real-robot demo session has an operator within reach of the E-stop
+
 ### Scope (what the project is, and is not)
+
+- This is a **research prototype**, NOT a medical device or certified assistive device.
+- All real-robot demos shown are **operator-supervised**; the safety measures above are required for any session.
+- Unsupervised home deployment is **explicitly out of scope**.
+- Camera and voice data: by default everything stays on-device; the runtime path performs no cloud upload.
+- Intended assistance is single-task, short-horizon manipulation while the operator is conscious and able to halt the system.
+- We do not claim accessibility certification, regulatory approval, or clinical efficacy.
 
 ## Status & Roadmap
 
