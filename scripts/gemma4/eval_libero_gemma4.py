@@ -305,14 +305,28 @@ def build_input_ids(language: str, tokenizer: Any, prompt_max_len: int = PROMPT_
     else:
         pad = [tokenizer.pad_token_id] * (prompt_max_len - len(ids))
         ids = ids + pad
-    full = (
-        [tokenizer.bos_token_id]
-        + list(range(VISION_PLACEHOLDER_BEGIN_IDX, VISION_PLACEHOLDER_BEGIN_IDX + NUM_VISION_TOKENS))
-        + ids
-        + [PROPRIO_PLACEHOLDER_IDX]
-        + list(range(ACTION_TOKEN_BEGIN_IDX, ACTION_TOKEN_BEGIN_IDX + NUM_ACTION_TOKENS))
-        + [tokenizer.eos_token_id]
-    )
+    # 2026-05-02 reproducibility patch: VLA_OLD_PROMPT_FIRST=1 reverts to the
+    # pre-e033e64 [BOS] + prompt + V + ... layout the wristb_v2 ckpt was
+    # trained against. Without it, RoPE positions are shifted and pre-e033e64
+    # ckpts behave as if language is ignored (eval drops 73% → 14%).
+    if os.environ.get("VLA_OLD_PROMPT_FIRST", "0") == "1":
+        full = (
+            [tokenizer.bos_token_id]
+            + ids
+            + list(range(VISION_PLACEHOLDER_BEGIN_IDX, VISION_PLACEHOLDER_BEGIN_IDX + NUM_VISION_TOKENS))
+            + [PROPRIO_PLACEHOLDER_IDX]
+            + list(range(ACTION_TOKEN_BEGIN_IDX, ACTION_TOKEN_BEGIN_IDX + NUM_ACTION_TOKENS))
+            + [tokenizer.eos_token_id]
+        )
+    else:
+        full = (
+            [tokenizer.bos_token_id]
+            + list(range(VISION_PLACEHOLDER_BEGIN_IDX, VISION_PLACEHOLDER_BEGIN_IDX + NUM_VISION_TOKENS))
+            + ids
+            + [PROPRIO_PLACEHOLDER_IDX]
+            + list(range(ACTION_TOKEN_BEGIN_IDX, ACTION_TOKEN_BEGIN_IDX + NUM_ACTION_TOKENS))
+            + [tokenizer.eos_token_id]
+        )
     return torch.tensor(full, dtype=torch.long)
 
 
