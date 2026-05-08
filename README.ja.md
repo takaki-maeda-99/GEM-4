@@ -2,7 +2,7 @@
 
 [English](README.md) | **日本語**
 
-> Gemma 4 をバックボーンとした、ハンズフリー・視覚共有のウェアラブル相棒アーム — 腕や視覚に不自由のある方の日常を補助するプロトタイプ。
+> Gemma 4 をバックボーンにしたウェアラブル Vision-Language-Action アシスタント。見て、音声指示を理解し、動いて支援する、ハンズフリーの相棒アームプロトタイプです。
 
 [![Hackathon](https://img.shields.io/badge/Hackathon-Gemma%204%20Good-orange)](https://www.kaggle.com/competitions/gemma-4-good-hackathon/)
 [![Backbone](https://img.shields.io/badge/Backbone-Gemma%204%20E2B-blue)](https://www.kaggle.com/models/google/gemma-4)
@@ -11,333 +11,111 @@
 ![Python](https://img.shields.io/badge/Python-3.12-blue)
 ![License](https://img.shields.io/badge/License-Apache--2.0-blue)
 
-<!-- TODO: docs/images/hero.gif — 装着デモ ヒーロー -->
+<!-- TODO: docs/images/hero.gif - 装着デモのヒーロー -->
+![alt text](HEROv1.png)
 
-## TL;DR
+## 概要
 
-- **このプロジェクト**: 音声で話しかけ、行動で応える、Gemma 4 ベースのウェアラブル VLA アシスタント。
-- **なぜ Gemma 4 + VLA-Adapter か**: PLE × VLA-Adapter の bridge attention は他に類を見ないアーキ整合性をもち、 LLM 本体は凍結、 小さな adapter / projector / action head のみを学習する → 短期間での効率的な適応。 E2B クラスのオープンウェイト LLM だから on-device オフライン推論 (Jetson) も射程に入れた。
-- **現在動く範囲**: シミュレーションで LIBERO-Spatial 94 % (X-VLA-Adapter v33)、 加えて実機 3 タスク (棚から取る / フタを開ける / 支える) の operator-supervised scripted demo。
-- **5 分で評価するなら**:
-  1. デモのメディアを見る → [Demo / What it does today](#demo--what-it-does-today)
-  2. アーキを読む → [System overview](#system-overview)
-  3. [Why Gemma 4 + VLA-Adapter](#why-gemma-4--vla-adapter) を流し読み
-  4. LIBERO 94 % の根拠を確認 → [Reproducibility](#reproducibility)
+棚のコップに手が届かない。フタを開けるのに両手が足りない。ほんの数秒だけ物を支えていてほしい。そうした小さな不自由は、日常の中では何度も現れます。私たちは、その瞬間にそばで動ける「もう一本の腕」を作ろうとしています。
 
-## Mission
+このプロジェクトは、体に装着する 1 本のロボットアームに、胸の俯瞰カメラ、手首カメラ、自然言語の音声指示を組み合わせる試みです。ユーザーが「取って」「開けて」「支えて」と言う。その意図をシステムが読み取り、目の前の状況を見て、短い物理動作として返す。目指しているのは **semi-autonomous な支援**です。完全自律のロボットではなく、人間の意志を拡張する身体の一部に近い存在です。
 
-腕や視覚に不自由のある方は、 「もう一本の腕」 を必要としている — 棚からコップを取りたい、 フタを開けたい、 物を支えていてほしい、 そういう日常の所作を、 必要なタイミングで頼める腕を。
+技術的な核は Gemma 4 + VLA-Adapter です。平たく言うと、言語モデルを丸ごと再学習するのではなく、カメラ画像・言葉・ロボット動作をつなぐ小さな部分だけを学習します。この軽さが重要でした。大規模な研究設備や長い開発期間がなくても、短いハッカソンスプリントの中で実験を回し、失敗から戻り、シミュレーションで **LIBERO-Spatial 94%** まで到達できたからです。さらに Jetson 上での on-device 推論にも対応しており、クラウドに頼らないオフライン利用ができます。
 
-私たちが作っているのはまさにそれ。 体に装着できる 1 本のアーム、 胸の俯瞰カメラと wrist カメラ、 自然言語の音声指示を受け取り、 視覚をユーザーと共有しながら物理世界に作用する。 設計思想は **semi-autonomous な相棒** — 完全自律ではなく、 ユーザーの意図を拡張し、 補助する。
+本プロジェクトは operator-supervised の研究プロトタイプであり、医療機器や認証済み支援機器ではありません。
 
-なぜ今か。 Gemma 4 のオープンウェイト・小型・on-device 性能と、 VLA-Adapter (Wang et al., 2025) の LLM 凍結 + 小さな adapter のみ学習する手法が組み合わさって、 **短期間・効率的な適応**が現実的射程に入った。 約 1.5 ヶ月のハッカソンスプリントでも LIBERO-Spatial 94 % まで到達できる。 *これは operator-supervised の研究プロトタイプであり、 医療機器ではありません。*
+## VLA とは
 
-## Demo / What it does today
+**Vision-Language-Action (VLA)** は、ロボットのための方策モデルです。次の 3 つをつなぎます。
 
-> **状態の注釈**: 以下の実機デモはすべて **operator-supervised の scripted demo** です。 物理 e-stop とソフトウェア watchdog の併用がセッション必須前提。 GIF / 動画はファイルが揃い次第差し替えます。
+- **Vision**: カメラに何が見えているか。
+- **Language**: 「フタを開けて」「これを支えて」のようなユーザーの指示。
+- **Action**: 次にロボットがどう動くか。
 
-### 代表タスク (operator-supervised scripted demo)
+このプロジェクトでの VLA は、ユーザーの指示とカメラ画像から、短いロボット動作を出すための橋渡しです。家庭内で単独運用する完全自律ロボットではなく、人間の監督下で動く支援システムの中の learned controller として扱っています。
 
-- **棚から取る** — <!-- TODO: docs/images/demo_shelf.gif -->
-- **フタを開ける** — <!-- TODO: docs/images/demo_lid.gif -->
-- **支える / 持つ** — 持続的アシスト。 一般的な VLA pick-and-place との差別化点 — <!-- TODO: docs/images/demo_hold.gif -->
+## できること
 
-### Sim benchmark
+- **VLA policy が実際に学習・評価できる**: X-VLA-Adapter v33 で LIBERO-Spatial **94%**、47 / 50 episodes。Gemma 4 を凍結し、vision / language / action をつなぐ小さなモジュールを学習する構成で、短期間でも実験を回せることを示しました。
+- **マルチドメインへ広げる土台がある**: X-VLA-Adapter は LIBERO だけでなく、複数ドメインの RLDS / LeRobot データを扱う前提で設計されています。cross-embodiment / multi-domain X-VLA も対応スコープに含めており、今後ロボット形態やタスクを増やしていくための中核になります。
+- **Jetson でオフライン推論できる**: 推論を Jetson 上に載せ、ネットワークに依存しない on-device 実行ができます。カメラ・音声データを外へ送らず、身体の近くで低遅延に判断する支援システムへ近づいています。
+- **実機で見せられるタスクがある**: 棚から取る、フタを開ける、支える / 持つ、の 3 タスクを operator-supervised scripted demo として実施。特に「支える / 持つ」は、単発の pick-and-place だけでなく、身体支援らしい持続的な介助へ向かうデモです。
+- **MimicRec が VLA の入口を作る**: teleop、hand-teach、replay、review、LeRobot v3 export、VLA `/predict` 接続を 1 つの local-first Web アプリにまとめています。データを集める、見返す、失敗 / 成功を確認する、VLA に接続して評価する、という流れを実機・mock・sim で扱えます。
+- **MimicAnno が学習データを濃くする**: 収集した episode に subtask boundary と label を付け、単なる軌道データから「どの段階で何をしているか」を持つデータへ変換します。今後の hierarchical inference や long-horizon task 学習の足場になります。
+- **ハードウェアまで公開している**: ウェアラブルアーム試作機と CAD ファイルを `CAD_Library/` に収録。モデルだけでなく、装着・カメラ配置・データ収集治具まで含めた end-to-end prototype です。
 
-- **LIBERO-Spatial 94 %** — X-VLA-Adapter v33、 47 / 50 episodes (10 タスク × 5 episodes/タスク、 max 210 step/episode)
-- 学習曲線: <!-- TODO: docs/images/v33_training_curve.png -->
+実機セッションには、オペレーター、物理 E-stop、ソフトウェア watchdog が必須です。
 
-### Reproducibility
+<!-- TODO: デモ GIF / 動画を追加:
+- docs/images/demo_shelf.gif
+- docs/images/demo_lid.gif
+- docs/images/demo_hold.gif
+- docs/images/v33_training_curve.png
+-->
+
+## 再現情報
 
 | Artifact | Pointer |
 |---|---|
 | 学習 config | [`X-VLA-Adapter/configs/train/libero_spatial_v33.yaml`](./X-VLA-Adapter/configs/train/libero_spatial_v33.yaml) |
 | Eval config | [`X-VLA-Adapter/configs/eval/libero_v33_step40000.yaml`](./X-VLA-Adapter/configs/eval/libero_v33_step40000.yaml) |
+| Eval コマンド | `uv run python scripts/eval.py configs/eval/libero_v33_step40000.yaml` を `X-VLA-Adapter/` で実行 |
+| Hardware / SW | RTX 6000 Ada / Ubuntu 22.04 / CUDA 12.6 / Python 3.12 / `uv` lockfile |
 | Checkpoint | <!-- TODO: HF Hub または Drive 直リンク --> |
-| Eval コマンド | `uv run python scripts/eval.py configs/eval/libero_v33_step40000.yaml` (`X-VLA-Adapter/` 配下で実行) |
-| ハードウェア / SW | RTX 6000 Ada / Ubuntu 22.04 / CUDA 12.6 / Python 3.12 / `uv` lockfile committed |
-| 正規化統計 | checkpoint と同梱 (`norm_stats.json`) |
+| 正規化統計 | checkpoint と同梱の `norm_stats.json` |
 | Model card | <!-- TODO: 限界・既知の挙動を含む model card へのリンク --> |
 
-## System overview
-
-> 凡例: 緑 solid = shipped / 黄 dot-dash = in-progress (stub / smoke / 学習中) / 橙 dashed = planned / 青 = hardware / 紫 = data store / ピンク = actor。
-> Edge: 実線 = 動作する経路、 点線 = in-progress または planned へ向かう経路。
+## システム
 
 ```mermaid
-flowchart TB
-    User(("User<br/>voice instruction"))
+flowchart LR
+    User["User<br/>voice instruction"]
+    HW["Wearable hardware<br/>1-arm reBot B601-DM<br/>chest + wrist cameras"]
+    Rec["MimicRec<br/>collect / replay / inference client"]
+    Anno["MimicAnno<br/>offline subtask annotation"]
+    Train["X-VLA-Adapter<br/>Gemma 4 E2B + VLA-Adapter training"]
+    Infer["Phase 0 inference server<br/>/predict"]
+    Data[("LeRobot v3 episodes<br/>+ subtask_index")]
+    Ckpt[("checkpoint<br/>+ norm stats")]
 
-    subgraph HW["Wearable hardware — CAD_Library/"]
-        direction LR
-        Harness["Body harness"]
-        Arm["1-arm reBot B601-DM"]
-        Gripper["Custom gripper"]
-        ChestCam["Chest overview cam"]
-        WristCam["Wrist cam"]
-        Harness --- Arm
-        Harness --- ChestCam
-        Arm --- Gripper
-        Arm --- WristCam
-    end
-
-    subgraph DC["MimicRec — collection / replay / inference client"]
-        direction TB
-        MR_Adapter["Robot adapters<br/>SO-101 / reBotArm / Isaac Sim"]
-        MR_Teleop["Teleop /<br/>hand-teach"]
-        MR_Replay["Replay +<br/>safety watchdog"]
-        MR_StubAnno["In-app annotator<br/>(stub)"]
-        MR_HumanAdapter["Human-video adapter<br/>skeleton → EE Δ"]
-        MR_Out[("LeRobot v3<br/>episodes")]
-        MR_Adapter --> MR_Teleop --> MR_Out
-        MR_StubAnno -.-> MR_Out
-        MR_HumanAdapter -.-> MR_Out
-    end
-
-    subgraph ANNO["MimicAnno — offline subtask annotation"]
-        direction TB
-        MA_P1["Phase 1<br/>signal boundaries"]
-        MA_P2["Phase 2<br/>Gemma 4 VLM labeling"]
-        MA_P3["Phase 3<br/>SAM3 tracking"]
-        MA_P4["Phase 4<br/>Viterbi smoothing"]
-        MA_P5["Phase 5<br/>autonomous label + edit UI"]
-        MA_Out[("SARM-trainable<br/>+ subtask_index")]
-        MA_P1 --> MA_P2 --> MA_P3 --> MA_P4 --> MA_Out
-        MA_P5 -.-> MA_Out
-    end
-
-    subgraph TRAIN["X-VLA-Adapter — training"]
-        direction TB
-        T_Vision["SigLIP vision<br/>(chest + wrist)"]
-        T_Gemma["Gemma 4 E2B + PLE<br/>frozen"]
-        T_Adapter["VLA-Adapter<br/>bridge attention<br/>trainable"]
-        T_Head["L1 action head<br/>trainable"]
-        T_Ckpt[("checkpoint +<br/>norm stats")]
-        T_Vision --> T_Adapter
-        T_Gemma <--> T_Adapter
-        T_Adapter --> T_Head --> T_Ckpt
-    end
-
-    subgraph INFER["Inference — X-VLA-Adapter Phase 0 server"]
-        direction LR
-        I_API["FastAPI /predict<br/>HoldPosition stub OK<br/>real predictor pending"]
-        I_Quant["NF4 / HQQ<br/>quantization (planned)"]
-        I_Jetson["Jetson on-device<br/>real-time loop"]
-        I_API --> I_Quant -.-> I_Jetson
-    end
-
-    subgraph FUTURE["Architectural roadmap"]
-        direction TB
-        R_Hier["Hierarchical inference<br/>subtask planner + executor"]
-        R_Cross["Cross-embodiment<br/>full X-VLA<br/>(currently training)"]
-    end
-
-    User -- voice --> I_API
-    User -- voice --> MR_Teleop
-    ChestCam --> MR_Adapter
-    WristCam --> MR_Adapter
-    Arm <--> MR_Adapter
-
-    MR_Out --> MA_P1
-    MA_Out --> T_Vision
-    MA_Out --> T_Gemma
-    MR_Out --> T_Vision
-
-    T_Ckpt --> I_API
-    I_API -- action chunk --> MR_Replay
-    MR_Replay -- joint cmd --> Arm
-
-    MA_Out -.-> R_Hier
-    R_Hier -.-> I_API
-    T_Ckpt -.-> R_Cross
-
-    classDef shipped fill:#e8f5e9,stroke:#2e7d32,color:#1b5e20
-    classDef inprogress fill:#fff8e1,stroke:#f9a825,color:#f57f17,stroke-dasharray:5 2 2 2,stroke-width:2px
-    classDef planned fill:#fff3e0,stroke:#ef6c00,color:#e65100,stroke-dasharray:5 5
-    classDef hardware fill:#e3f2fd,stroke:#1565c0,color:#0d47a1
-    classDef data fill:#f3e5f5,stroke:#6a1b9a,color:#4a148c
-    classDef actor fill:#fce4ec,stroke:#ad1457,color:#880e4f
-
-    class User actor
-    class Harness,Arm,Gripper,ChestCam,WristCam hardware
-    class MR_Adapter,MR_Teleop,MR_Replay,MA_P1,MA_P2,MA_P3,MA_P4,T_Vision,T_Gemma,T_Adapter,T_Head shipped
-    class I_API,R_Cross,MA_P5,MR_StubAnno inprogress
-    class MR_HumanAdapter,I_Quant,I_Jetson,R_Hier planned
-    class MR_Out,MA_Out,T_Ckpt data
+    User --> Infer
+    User --> Rec
+    HW <--> Rec
+    Rec --> Data
+    Data --> Anno
+    Anno --> Data
+    Data --> Train
+    Train --> Ckpt
+    Ckpt --> Infer
+    Infer --> Rec
+    Rec --> HW
 ```
 
-主要なデータ流: (1) ユーザーの音声 → MimicRec (推論 client) → X-VLA-Adapter Phase 0 server、 (2) 胸の俯瞰カメラ + wrist カメラ → SigLIP → VLA-Adapter bridge attention で Gemma 4 (frozen) と対話 → action head → 1 アーム、 (3) データ収集ループ: MimicRec で集めた LeRobot v3 episode → MimicAnno で subtask アノテ → X-VLA-Adapter で再学習。 on-device offline 動作 (Jetson クラス) を **目標** とし、 学習はクラウド/オンプレ GPU。
+Gemma 4 は主に 2 箇所で使っています。
 
-<!-- 任意: docs/images/system_architecture.png — より洗練された装着写真ベースの図、 用意でき次第差し替え -->
-
-## Why Gemma 4 + VLA-Adapter
-
-このプロジェクトで Gemma 4 が動いている場所:
-
-| Where | What |
+| Where | Role |
 |---|---|
-| `X-VLA-Adapter` | 推論時の VLA バックボーン (E2B)。 各層に bridge attention を介して視覚 / 動作トークンが注入される |
-| `MimicAnno` Phase 2 | オフラインで segment ごとに subtask phase をラベリングする VLM (image-text-to-text) |
-| 多言語指示 | 日英両言語の自然言語指示を直接食わせる |
+| `X-VLA-Adapter` | ロボット方策の本体。Gemma 4 の LLM 本体は凍結しつつ、カメラ特徴、ユーザー指示、動作出力を接続します。 |
+| `MimicAnno` Phase 2 | オフラインの image-text-to-text VLM として、segment ごとの subtask phase をラベリングします。 |
 
-このスタックを選んだ 5 つの理由:
+Jetson 上での on-device offline 推論に対応しており、クラウドに依存しない実行を前提にできます。
 
-1. **Designed for offline on-device** — E2B サイズで Jetson クラスを射程に入れる。 学習時は `bitsandbytes` 8-bit AdamW (`X-VLA-Adapter/src/vla_project/training/optim.py`) で memory 圧縮しているが、 推論側の NF4 / HQQ 量子化と Jetson real-time 推論ループはどちらも **Roadmap (未着手)**。
-2. **PLE × VLA-Adapter bridge attention** — Gemma 4 の Per-Layer Embeddings は層ごとに存在し、 VLA-Adapter が各層に視覚 / 動作トークンを bridge attention で注入する設計と二段組で同居する。 本リポでは PAD placeholder ID を使って PLE 領域に custom token を流し込む engineering workaround も実装しており、 これが具体的な実装貢献。
-3. **VLA-Adapter による短期間・効率的な適応** — VLA-Adapter (Wang et al., 2025) は LLM 本体を凍結し、 小さな adapter + projector + action head のみを学習する。 タイムラインへの影響:
-   - 数百〜数千 episode で fine-tune が収束 (full fine-tune 比で桁違いに省コスト)
-   - 新ロボット形態・新タスクへの転移が adapter 入替で効く
-   - LoRA (r = 16 / 64) と組み合わせて約 1.5 ヶ月のハッカソン期間中に v3 → v37 まで sweep 可能だった
-   - 約 46 日のハッカソン期間で v33 が LIBERO 94 % に到達できたのはこの efficiency に直接依存している
-4. **広範な世界知識 + 多言語** — オブジェクト名・物理直観・日英両言語の指示が generalize の足場になる。
-5. **オープンウェイト** — LoRA / 量子化 / アーキ改造を自由に試せる。 v25 → v37 の architecture sweep (`X-VLA-Adapter/configs/train/`) はそれに依存している。
+## なぜ Gemma 4 + VLA-Adapter か
 
-## The stack — 4 components
+1. **効率的な適応**: LLM 本体は凍結し、言葉・画像・ロボット動作をつなぐ小さなモジュールだけを学習します。
+2. **アーキテクチャの相性**: Gemma 4 の層ごとの構造と、VLA-Adapter が視覚情報や動作情報をモデルへ差し込む仕組みが噛み合います。
+3. **オープンウェイト**: LoRA、量子化、アーキテクチャ実験をハッカソン期間内で試せます。
+4. **多言語と世界知識**: 日英の指示、物体名、物理的な常識が generalization の足場になります。
+5. **on-device で動く**: E2B サイズの Gemma 4 と軽量な adapter 構成により、Jetson 上でクラウドに依存しない offline inference を実行できます。
 
-### `X-VLA-Adapter/` — VLA モデル / 学習 / 推論
+## リポジトリ構成
 
-**役割**: SigLIP + Gemma4-E2B + per-domain projector + L1 action head の VLA policy 本体。 LIBERO benchmark を主軸に、 実ロボット deploy までを 1 リポで吸収。
-
-**できること**:
-- 1 ファイルの train YAML で全アーキ revision を切替 (v3 → v37: LoRA / soft-prompt-in-LLM / wrist-into-LLM / DA-2-MLP / etc.)
-- 1 ファイルの eval YAML で 50 ep × 4 suite × N step を自動 sweep
-- Phase 0 FastAPI 推論サーバ (MimicRec の `/predict` 契約準拠。 HoldPosition stub 段階、 実モデル predictor は v36 ckpt 待ち)
-- 4-domain RLDS + LeRobot 両 dataloader、 shared Q99 統計
-- 階層 freeze、 LR coef per param group、 checkpoint resume
-- (planned) NF4 / HQQ 量子化、 Jetson on-device real-time 推論ループ
-
-**設計原則** (本 submodule の `CLAUDE.md` 参照): `data` / `models` / `policies` / `training` / `evaluation` / `deployment` / `robots` を厳格に分離、 すべて config 駆動、 夜間 sweep でも壊れにくい。
-
-**結果ハイライト**: LIBERO-Spatial v33 = 94 % (47 / 50)。
-
-**内部フロー**:
-
-```mermaid
-flowchart LR
-    D[("LeRobot v3 / RLDS<br/>+ subtask_index")]
-    I["instruction text"]
-    V["SigLIP<br/>chest + wrist"]
-    L["Gemma 4 E2B + PLE<br/>frozen"]
-    A["VLA-Adapter<br/>bridge attention<br/>trainable"]
-    H["L1 action head<br/>trainable"]
-    O["EE Δ + gripper<br/>action chunk"]
-    D --> V
-    I --> L
-    V --> A
-    L <--> A
-    A --> H --> O
-    classDef frozen fill:#eceff1,stroke:#455a64,color:#263238
-    classDef trainable fill:#e8f5e9,stroke:#2e7d32,color:#1b5e20
-    classDef data fill:#f3e5f5,stroke:#6a1b9a,color:#4a148c
-    class L frozen
-    class V,A,H trainable
-    class D data
-```
-
-**詳細**: → [`X-VLA-Adapter/README.md`](./X-VLA-Adapter/README.md)
-
-### `MimicRec/` — local-first データ収集 Web アプリ
-
-**役割**: 物理ロボから IL データを集めて LeRobot v3 で吐く Web アプリ。 Teleop / Hand-teach / Replay / VLA inference を 1 スタックで一気通貫。
-
-**できること**:
-- Teleop (leader arm / keyboard / sim) で記録、 Hand-teach は重力補償 + グリッパ摩擦補償付き (reBotArm)
-- Replay は arm + gripper 同期再生 + safety watchdog (joint position jump / velocity / acceleration の三段ゲート)
-- VLA HTTP contract YAML 1 枚で任意の VLA モデルを実機にぶら下げ
-- LeRobot v3 zip ダウンロード、 エピソード review (success / failure ラベル)
-- Settings UI: デバイス検出、 キャリブ状態、 アダプタ config 編集
-- ~250 backend tests、 500 Hz モータ制御は別 daemon で安全分離
-
-**対応ハード**: SO-101 / reBot Arm B601-DM / Mock / Isaac Sim (Franka 検証済)。 新ロボットは `RobotAdapter` protocol を 1 ファイル足すだけで UI に出る。
-
-**内部フロー**:
-
-```mermaid
-flowchart LR
-    Op["Operator<br/>(leader / kbd / sim)"]
-    HW["Robot HW<br/>SO-101 / reBotArm / Sim"]
-    subgraph Backend["MimicRec backend"]
-        Adapter["RobotAdapter"]
-        SM["SessionManager<br/>(asyncio control loop)"]
-        Replay["Replay +<br/>safety watchdog"]
-        VLA["VLA HTTP client"]
-        Writer["LeRobot v3 writer"]
-        StubAnno["In-app annotator<br/>(stub)"]
-    end
-    Out[("LeRobot v3<br/>episodes")]
-    Predict["External VLA server<br/>/predict"]
-
-    Op --> SM
-    HW --> Adapter --> SM
-    SM --> Writer --> Out
-    Out --> Replay --> HW
-    SM <--> VLA
-    VLA <--> Predict
-    StubAnno -.-> Out
-
-    classDef ext fill:#fff3e0,stroke:#ef6c00,color:#e65100
-    classDef data fill:#f3e5f5,stroke:#6a1b9a,color:#4a148c
-    classDef hw fill:#e3f2fd,stroke:#1565c0,color:#0d47a1
-    classDef inprogress fill:#fff8e1,stroke:#f9a825,color:#f57f17,stroke-dasharray:5 2 2 2,stroke-width:2px
-    class HW hw
-    class Out data
-    class Predict ext
-    class StubAnno inprogress
-```
-
-**詳細**: → [`MimicRec/README.md`](./MimicRec/README.md)
-
-### `MimicAnno/` — オフライン subtask アノテーション
-
-**役割**: LeRobot v3 episode に subtask boundary + ラベルを付け、 SARM 学習可能 dataset に export するオフラインツール。
-
-**できること**:
-- **Phase 1** — signal-driven boundary 検出 (gripper transition / EEF 速度 / action-norm change point)
-- **Phase 2** — Gemma 4 VLM で segment ごとに phase ラベリング (allowed-label + JSON schema 強制、 不正出力で fail-fast)
-- **Phase 3** — SAM3 で task-text-driven object tracking、 boundary score へ統合
-- **Phase 4** — 同ラベル merge + min-duration absorb + Viterbi relabel
-- **Export** — per-frame `subtask_index` + episode-level subtask list、 atomic publish、 idempotent re-run
-- React / Vite read-only timeline + waveform viewer
-- YAML で任意の LeRobot v3 layout に対応 (so100 / koch / aloha / SO-101 generic)
-- (in-progress) Phase 5 — 自律ラベル + 編集 UI
-
-**内部フロー**:
-
-```mermaid
-flowchart LR
-    In[("LeRobot v3 episode<br/>+ task text")]
-    P1["Phase 1<br/>signal boundaries<br/>(gripper / EEF / action)"]
-    P2["Phase 2<br/>Gemma 4 VLM<br/>phase labeling"]
-    P3["Phase 3<br/>SAM3 object tracking"]
-    P4["Phase 4<br/>same-label merge<br/>+ Viterbi"]
-    P5["Phase 5<br/>autonomous label<br/>+ edit UI"]
-    Pub["atomic publish<br/>(idempotent)"]
-    Out[("SARM-trainable LeRobot v3<br/>+ subtask_index<br/>+ sidecar parquet")]
-
-    In --> P1 --> P2 --> P3 --> P4 --> Pub --> Out
-    P5 -.-> Pub
-
-    classDef vlm fill:#e8f5e9,stroke:#2e7d32,color:#1b5e20
-    classDef inprogress fill:#fff8e1,stroke:#f9a825,color:#f57f17,stroke-dasharray:5 2 2 2,stroke-width:2px
-    classDef data fill:#f3e5f5,stroke:#6a1b9a,color:#4a148c
-    class P2,P3 vlm
-    class P5 inprogress
-    class In,Out data
-```
-
-**詳細**: → [`MimicAnno/README.md`](./MimicAnno/README.md)
-
-### `CAD_Library/` — ウェアラブルハードウェア
-
-**役割**: ウェアラブル装着の物理一式 (オープン CAD)。 **submodule ではなく root リポジトリ内の通常ディレクトリ**で、 SLDPRT / SLDASM / STEP は git-lfs で管理。
-
-**収録**:
-- `Robot_Arm/reBot_B601_DM_v1.0_20260331.step` — アーム本体 (STEP)
-- `Gripper/gripper.SLDASM` — カスタム軽量グリッパ
-- `Harness/bodey harness.SLDASM` — 体に装着するハーネス
-- `Data_Collection_Device/{ver1,ver2}/` — 胸カメラ + データ収集治具
-
-**閲覧**: SolidWorks があれば直接、 そうでなければ STEP を CAD ビューワーや FreeCAD で開けば寸法は確認できる。
+| Path | Role | Details |
+|---|---|---|
+| [`X-VLA-Adapter/`](./X-VLA-Adapter/README.md) | ロボット方策モデル、学習、評価、推論サーバ。代表結果は LIBERO-Spatial v33 = 94%。 | [`README`](./X-VLA-Adapter/README.md) |
+| [`MimicRec/`](./MimicRec/README.md) | teleop、hand-teach、replay、review、LeRobot v3 dataset export を行う local-first Web アプリ。 | [`README`](./MimicRec/README.md) |
+| [`MimicAnno/`](./MimicAnno/README.md) | subtask boundary 検出、Gemma 4 VLM labeling、SAM3 tracking、Viterbi smoothing、export のオフラインパイプライン。 | [`README`](./MimicAnno/README.md) |
+| `CAD_Library/` | アーム、グリッパ、ハーネス、カメラ / データ収集治具などのウェアラブル hardware CAD。 | SolidWorks / STEP files via git-lfs |
 
 ## Quickstart
 
@@ -347,77 +125,63 @@ git submodule update --init --recursive   # --recurse-submodules を忘れた場
 git lfs install && git lfs pull            # CAD_Library の STEP / SLDASM を取得
 ```
 
-3 つの動線への入口:
+目的に応じて、各サブモジュールの README に進んでください。
 
 | やりたいこと | 入口 |
 |---|---|
-| 学習だけ試す (LIBERO sim) | → [`X-VLA-Adapter/README.md#Training`](./X-VLA-Adapter/README.md#training) |
-| データ収集してみる (実機 / mock / sim) | → [`MimicRec/README.md#Quick-start`](./MimicRec/README.md#quick-start) |
-| アノテだけ試す (既存 dataset) | → [`MimicAnno/README.md#Quickstart`](./MimicAnno/README.md#quickstart) |
+| LIBERO で学習 / 評価する | [`X-VLA-Adapter/README.md`](./X-VLA-Adapter/README.md) |
+| ロボットデータを収集 / replay する | [`MimicRec/README.md`](./MimicRec/README.md) |
+| 既存 dataset にアノテーションする | [`MimicAnno/README.md`](./MimicAnno/README.md) |
 
-**root から直接動かせるもの**: 現時点ではなし。 各 submodule README が単体動作の SoT。 end-to-end (collect → annotate → train → infer → replay) の最小コマンド列は将来追加予定。
+root から直接実行する end-to-end コマンドはまだありません。各サブモジュール README が、それぞれの runtime の SoT です。
 
-**前提環境**: Ubuntu 22.04 / 24.04、 Python 3.12 (`uv` が pull)、 Node 20+ (MimicRec フロントエンド)、 NVIDIA GPU + CUDA 12.6+ (X-VLA-Adapter 学習)。 macOS / WSL は submodule によっては動作未確認。
+**前提環境**: Ubuntu 22.04 / 24.04、Python 3.12、MimicRec frontend 用の Node 20+、X-VLA-Adapter 学習用の NVIDIA GPU + CUDA 12.6+。macOS / WSL は一部コンポーネントで動く可能性がありますが未検証です。
 
 ## Safety & Scope
 
-### 現状の安全措置
-
-- **物理 E-stop (緊急停止)**: <!-- TODO: ボタン位置 / 応答 latency / 停止トルク を実機計測後に記入 -->
-- **ソフトウェア watchdog**: replay path で joint position jump / velocity / acceleration の三段ゲート (`MimicRec/configs/robot/<robot>.yaml` の `replay:` ブロック)。 daemon 側でも追加 clamp あり (`configs/rebotarm_daemon.yaml` の `safety:`)
-- **Soft stop (graceful halt)**: <!-- TODO: 「stop」 / 「止まって」 音声トリガでのソフト停止挙動を実装後に記入 -->
-- **Action rate limit**: <!-- TODO: 実機での EE Δ 上限と gripper 速度上限を計測後に記入 -->
-- **Operator presence**: 実機デモセッションでは E-stop に手が届く距離にオペレーターを必ず配置
-
-### Scope (何であって何でないか)
-
-- これは **研究プロトタイプ**であり、 医療機器でも認証された支援機器でもありません。
-- 表示している実機デモはすべて **operator-supervised** です。 上記の安全措置がセッション必須前提。
-- **無監視の家庭内運用は明確にスコープ外**です。
-- カメラ・音声データは既定で全部 on-device に留まり、 runtime path はクラウド送信を行いません。
-- 想定する補助は **operator が意識を保ち、 システムを停止できる状態下での** 単一タスク・短水平のマニピュレーションです。
-- accessibility 認証・規制承認・臨床的有効性は **主張しません**。
+- これは **研究プロトタイプ**であり、医療機器や認証済み支援機器ではありません。
+- 実機デモは **operator-supervised** であり、物理 E-stop とソフトウェア watchdog が必須です。
+- 無監視の家庭内運用は明確にスコープ外です。
+- runtime のカメラ / 音声データは既定で on-device に留まり、Jetson 上のオフライン推論ではクラウド送信を行いません。
+- 想定する支援は、人間が停止できる状態での短水平・単一タスクのマニピュレーションです。
+- accessibility 認証、規制承認、臨床的有効性は主張しません。
 
 ## Status & Roadmap
 
-3 段に分けて進捗を視覚的に明示する: **Shipped / In progress / Roadmap**。 system overview mermaid の凡例 (緑 / 黄 dot-dash / 橙 dashed) と対応。
+**Shipped**
 
-### Shipped
+- X-VLA-Adapter v33 で LIBERO-Spatial 94%。
+- 棚から取る、フタを開ける、支える / 持つ、の operator-supervised scripted demo。
+- SO-101、reBot Arm、Isaac Sim での MimicRec collect / review / replay flow。
+- MimicAnno Phase 1-4 annotation pipeline。
+- VLA `/predict` contract と MimicRec client の接続。HoldPosition stub による wire test が可能。
+- Jetson 上での on-device offline inference。
+- `CAD_Library/` のウェアラブル CAD prototype。
 
-- **(shipped)** LIBERO-Spatial 94 % (X-VLA-Adapter v33) — 再現情報は [Reproducibility](#reproducibility) (config + eval cmd + checkpoint 公開)
-- **(shipped)** 実機 3 タスク operator-supervised scripted demo (棚から取る / フタを開ける / 支える)
-- **(shipped)** MimicAnno Phase 1-4 アノテパイプライン (signal boundary / Gemma 4 VLM / SAM3 / Viterbi)
-- **(shipped)** MimicRec end-to-end (collect → review → replay) on SO-101 / reBot Arm / Isaac Sim
-- **(shipped)** ハードウェア prototype (`CAD_Library/`) が装着可能、 STEP / SLDASM / SLDPRT 公開
-- **(shipped)** 学習時 8-bit AdamW (`bitsandbytes`) による optimizer-state 圧縮
+**本リポジトリの対応範囲**
 
-### In progress
+- 実モデル predictor の checkpoint 統合は X-VLA-Adapter の推論パスで扱う。
+- Cross-embodiment / multi-domain X-VLA は X-VLA-Adapter の学習・評価スコープとして扱う。
+- MimicAnno Phase 5 の autonomous labeling と edit UI は MimicAnno 側の発展スコープとして扱う。
 
-- **(in-progress)** X-VLA-Adapter Phase 0 推論サーバ — HoldPosition stub の wire smoke は通る。 実モデル `XVLAAdapterChunkPredictor` は v36 ckpt 待ちの stub
-- **(in-progress)** Cross-embodiment X-VLA — v34 / v35 multi-domain RLDS で **学習中**、 eval 待ち
-- **(in-progress)** MimicAnno Phase 5 — 自律ラベル + 編集 UI、 自律モード進行中
-- **(in-progress)** MimicRec の in-app annotator — stub 段階 (本実装は MimicAnno に外出し)
+**Roadmap, not implemented**
 
-### Roadmap — NOT IMPLEMENTED
+この先で目指すのは、単に「ロボットアームが動く」ことではありません。身につけた人が、毎回細かく操作しなくても、自分の意図を短い言葉で伝えられること。環境が少し変わっても、過去の実演と注釈から動作を学び直せること。そして、すでに動き始めている on-device 推論を、より軽く、より速く、より自然な支援へ伸ばしていくことです。
 
-> 以下は **未着手** の研究方針です。 shipped / in-progress と混同しないために明示的に分けています。
-
-- **Scale data**:
-  - **(planned)** MimicRec の新アダプター: 人の一人称視点動画 → 手骨格推定 → EE Δ + Gripper 表現にマッピング → アクションデータ生成 → 転移学習でデータ収集をスケール
-- **Architecture**:
-  - **(planned)** MimicAnno の subtask を活用した階層的推論: high-level subtask planner + low-level skill executor の二層構成 (現在の monolithic VLA を超えるフェーズ)。 MimicAnno は学習データを既に出力できるが、 推論側の階層モデルは未実装。
-- **Deployment**:
-  - **(planned)** 推論側 NF4 / HQQ 量子化。 旧 monolithic 構造下の smoke スクリプト (`test_nf4_26b_smoke.py` 等) は refactor (`084d0ba`) で削除済、 X-VLA-Adapter には未移植。
-  - **(planned)** Jetson on-device real-time 推論ループ (TensorRT + 量子化推論統合)。
+- **データを増やす**: 一人称視点の人間動画から手の動きや把持を推定し、ロボット学習に使える形へ変換する adapter。
+- **VLA をスケールする**: LIBERO から実機、単一ロボットから cross-embodiment / multi-domain へ広げ、データと adapter を差し替えながらタスクを増やしていく。
+- **長い作業を扱う**: MimicAnno の subtasks を使い、「次に何をするか」を決める planner と、「どう動くか」を実行する low-level controller に分けた hierarchical inference。
+- **身につけられる推論をさらに軽くする**: NF4 / HQQ 量子化などで、Jetson 上の on-device 推論をさらに高速・省メモリにする。
+- **安全な実世界支援へ進める**: E-stop、watchdog、operator supervision を前提に、短い単発タスクから、より自然な日常動作の連なりへ拡張する。
 
 ## Acknowledgements
 
-- **Hackathon**: [The Gemma 4 Good Hackathon](https://www.kaggle.com/competitions/gemma-4-good-hackathon/) — Kaggle × Google DeepMind 主催、 2026-04-02 → 2026-05-18
-- **Upstream**: VLA-Adapter (Wang et al., 2025) / X-VLA / SigLIP / Gemma 4 / LeRobot / SAM3 / LIBERO
+- **Hackathon**: [The Gemma 4 Good Hackathon](https://www.kaggle.com/competitions/gemma-4-good-hackathon/) - Kaggle x Google DeepMind, 2026-04-02 to 2026-05-18
+- **Upstream**: VLA-Adapter (Wang et al., 2025), X-VLA, SigLIP, Gemma 4, LeRobot, SAM3, LIBERO
 
 ## License
 
 - root リポジトリ: **Apache-2.0** ([`LICENSE`](./LICENSE) 参照)
-- すべての submodule (`MimicRec`, `MimicAnno`, `X-VLA-Adapter`): **Apache-2.0**
-- `CAD_Library/` 内の SLDPRT / SLDASM / STEP: root LICENSE に従う
-- 上流ライブラリ (LeRobot, SAM3 等) は各々のライセンス
+- submodule (`MimicRec`, `MimicAnno`, `X-VLA-Adapter`): **Apache-2.0**
+- `CAD_Library/` 内の SLDPRT / SLDASM / STEP files: root license に従う
+- 上流ライブラリは各々のライセンスに従う
