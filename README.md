@@ -172,6 +172,26 @@ Primary data flows: (1) user voice → MimicRec inference client → X-VLA-Adapt
 
 ## Why Gemma 4 + VLA-Adapter
 
+Where Gemma 4 runs in this project:
+
+| Where | What |
+|---|---|
+| `X-VLA-Adapter` | The VLA backbone (E2B) at inference time; vision / action tokens are injected into each layer via bridge attention |
+| `MimicAnno` Phase 2 | Image-text-to-text VLM that labels the subtask phase of each segment offline |
+| Multilingual instructions | Natural language instructions in both Japanese and English are passed in directly |
+
+Five reasons we chose this stack:
+
+1. **Designed for offline on-device** — At E2B, Gemma 4 is in reach of Jetson-class hardware. Training-time memory is compressed via `bitsandbytes` 8-bit AdamW (`X-VLA-Adapter/src/vla_project/training/optim.py`); inference-side NF4 / HQQ quantization and the Jetson real-time loop both remain on the **roadmap**.
+2. **PLE × VLA-Adapter bridge attention** — Gemma 4's Per-Layer Embeddings sit at every layer; VLA-Adapter injects vision and action tokens into every layer through bridge attention. The two structures stack naturally on top of each other. Our PAD-placeholder-ID workaround for routing custom tokens through PLE is a concrete engineering contribution.
+3. **Short-window efficient adaptation via VLA-Adapter** — VLA-Adapter (Wang et al., 2025) freezes the LLM and trains only a small adapter + projector + action head. For our timeline this means:
+   - fine-tuning converges on hundreds-to-thousands of episodes, orders of magnitude cheaper than full fine-tune
+   - transfer to new robot embodiments and new tasks is a matter of swapping adapters
+   - combined with LoRA (r = 16 / 64), we ran a v3 → v37 architecture sweep within the ~1.5-month hackathon window
+   - within that window (~46 days, ~10 days remaining at time of writing), v33 reaching LIBERO 94 % depended directly on this efficiency
+4. **Broad world knowledge + multilingual** — object names, physical intuition, and bilingual (ja / en) instruction handling all serve as a generalization scaffold.
+5. **Open weights** — LoRA, quantization, and architecture surgery are unrestricted. Our v25 → v37 architecture sweep (`X-VLA-Adapter/configs/train/`) depends on this.
+
 ## The stack — 4 components
 
 ### `X-VLA-Adapter/` — VLA model & training & inference
