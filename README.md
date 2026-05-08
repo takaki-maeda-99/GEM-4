@@ -44,7 +44,7 @@ We believe this is the moment to attempt it. Gemma 4's open-weight, small-footpr
 
 ### Sim benchmark
 
-- **LIBERO-Spatial 94 %** — X-VLA-Adapter v33, 47 / 50 episodes, 50 episode/suite, 4 tasks × 50 steps
+- **LIBERO-Spatial 94 %** — X-VLA-Adapter v33, 47 / 50 episodes (10 tasks × 5 episodes per task, max 210 steps per episode)
 - Training curve: <!-- TODO: docs/images/v33_training_curve.png -->
 
 ### Reproducibility
@@ -188,7 +188,7 @@ Five reasons we chose this stack:
    - fine-tuning converges on hundreds-to-thousands of episodes, orders of magnitude cheaper than full fine-tune
    - transfer to new robot embodiments and new tasks is a matter of swapping adapters
    - combined with LoRA (r = 16 / 64), we ran a v3 → v37 architecture sweep within the ~1.5-month hackathon window
-   - within that window (~46 days, ~10 days remaining at time of writing), v33 reaching LIBERO 94 % depended directly on this efficiency
+   - within that ~46-day window, v33 reaching LIBERO 94 % depended directly on this efficiency
 4. **Broad world knowledge + multilingual** — object names, physical intuition, and bilingual (ja / en) instruction handling all serve as a generalization scaffold.
 5. **Open weights** — LoRA, quantization, and architecture surgery are unrestricted. Our v25 → v37 architecture sweep (`X-VLA-Adapter/configs/train/`) depends on this.
 

@@ -44,7 +44,7 @@
 
 ### Sim benchmark
 
-- **LIBERO-Spatial 94 %** — X-VLA-Adapter v33、 47 / 50 episodes、 50 episode/suite、 4 タスク × 50 step
+- **LIBERO-Spatial 94 %** — X-VLA-Adapter v33、 47 / 50 episodes (10 タスク × 5 episodes/タスク、 max 210 step/episode)
 - 学習曲線: <!-- TODO: docs/images/v33_training_curve.png -->
 
 ### Reproducibility
@@ -188,7 +188,7 @@ flowchart TB
    - 数百〜数千 episode で fine-tune が収束 (full fine-tune 比で桁違いに省コスト)
    - 新ロボット形態・新タスクへの転移が adapter 入替で効く
    - LoRA (r = 16 / 64) と組み合わせて約 1.5 ヶ月のハッカソン期間中に v3 → v37 まで sweep 可能だった
-   - ハッカソン期間 (約 46 日、 残 10 日時点) で v33 が LIBERO 94 % に到達できたのはこの efficiency に直接依存している
+   - 約 46 日のハッカソン期間で v33 が LIBERO 94 % に到達できたのはこの efficiency に直接依存している
 4. **広範な世界知識 + 多言語** — オブジェクト名・物理直観・日英両言語の指示が generalize の足場になる。
 5. **オープンウェイト** — LoRA / 量子化 / アーキ改造を自由に試せる。 v25 → v37 の architecture sweep (`X-VLA-Adapter/configs/train/`) はそれに依存している。
 
