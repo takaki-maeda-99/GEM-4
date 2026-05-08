@@ -15,6 +15,15 @@
 
 ## TL;DR
 
+- **What**: A wearable VLA assistant — voice in, action out — built around Gemma 4.
+- **Why Gemma 4 + VLA-Adapter**: PLE × VLA-Adapter bridge attention is a unique architectural fit; the LLM stays frozen and only a small adapter / projector / action head is trained → short-window efficient adaptation. An E2B-class open-weight LLM brings on-device offline inference (Jetson) within reach.
+- **What works today**: LIBERO-Spatial 94 % in simulation (X-VLA-Adapter v33), plus operator-supervised scripted demos of three real-robot tasks (take from shelf / open lid / hold).
+- **How to evaluate in 5 minutes**:
+  1. Watch the demo media in [Demo / What it does today](#demo--what-it-does-today)
+  2. Read the architecture in [System overview](#system-overview)
+  3. Skim [Why Gemma 4 + VLA-Adapter](#why-gemma-4--vla-adapter)
+  4. Verify LIBERO 94 % via [Reproducibility](#reproducibility)
+
 ## Mission
 
 ## Demo / What it does today

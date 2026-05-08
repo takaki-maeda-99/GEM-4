@@ -15,6 +15,15 @@
 
 ## TL;DR
 
+- **このプロジェクト**: 音声で話しかけ、行動で応える、Gemma 4 ベースのウェアラブル VLA アシスタント。
+- **なぜ Gemma 4 + VLA-Adapter か**: PLE × VLA-Adapter の bridge attention は他に類を見ないアーキ整合性をもち、 LLM 本体は凍結、 小さな adapter / projector / action head のみを学習する → 短期間での効率的な適応。 E2B クラスのオープンウェイト LLM だから on-device オフライン推論 (Jetson) も射程に入れた。
+- **現在動く範囲**: シミュレーションで LIBERO-Spatial 94 % (X-VLA-Adapter v33)、 加えて実機 3 タスク (棚から取る / フタを開ける / 支える) の operator-supervised scripted demo。
+- **5 分で評価するなら**:
+  1. デモのメディアを見る → [Demo / What it does today](#demo--what-it-does-today)
+  2. アーキを読む → [System overview](#system-overview)
+  3. [Why Gemma 4 + VLA-Adapter](#why-gemma-4--vla-adapter) を流し読み
+  4. LIBERO 94 % の根拠を確認 → [Reproducibility](#reproducibility)
+
 ## Mission
 
 ## Demo / What it does today
