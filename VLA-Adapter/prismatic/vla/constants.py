@@ -56,13 +56,22 @@ BRIDGE_CONSTANTS = {
 
 # Function to detect robot platform from command line arguments
 def detect_robot_platform():
+    # 2026-04-25 #022: env var override (auto-detect の偽陽性回避)。
+    # 例: --use_wrist_bridge True が "bridge" にマッチして BRIDGE = chunk5 になり Taco pretrain が壊れる。
+    import os as _os
+    _env = _os.environ.get("ROBOT_PLATFORM", "").upper()
+    if _env in {"LIBERO", "ALOHA", "BRIDGE", "CALVIN"}:
+        return _env
+
     cmd_args = " ".join(sys.argv).lower()
 
     if "libero" in cmd_args:
         return "LIBERO"
     elif "aloha" in cmd_args:
         return "ALOHA"
-    elif "bridge" in cmd_args:
+    elif "bridge_orig" in cmd_args or "bridge_v2" in cmd_args or "dataset_name=bridge" in cmd_args:
+        # 2026-04-25 #022: 旧マッチ "bridge" は wrist_bridge flag と衝突するので、
+        # bridge データセット固有の文字列にしぼる。
         return "BRIDGE"
     elif "calvin" in cmd_args:
         return "CALVIN"
