@@ -7,6 +7,7 @@ Core interface script for configuring and initializing RLDS datasets.
 import copy
 import inspect
 import json
+import os
 from functools import partial
 from typing import Callable, Dict, List, Optional, Tuple, Union
 
@@ -199,7 +200,40 @@ def make_dataset_from_rlds(
 
         return traj
 
-    builder = tfds.builder(name, data_dir=data_dir)
+    # v37 patch: prefer tfds.builder_from_directory when local data exists.
+    # Reason: tfds.builder(<name>, ...) resolves <name> via the global tfds
+    # registry, which can map an OXE dataset name (e.g., "bridge") to a
+    # different upstream class (e.g., bridge_data_v2) whose schema does
+    # not match the locally downloaded files. builder_from_directory reads
+    # the on-disk dataset_info.json, guaranteeing schema/data alignment.
+    # Fallback preserves prior behavior when data is not yet downloaded.
+    _name_root = os.path.join(str(data_dir), name)
+    _local_dirs: List[str] = []
+    if os.path.isdir(_name_root):
+        for entry in os.listdir(_name_root):
+            cand = os.path.join(_name_root, entry)
+            if os.path.isdir(cand) and os.path.isfile(os.path.join(cand, "dataset_info.json")):
+                _local_dirs.append(cand)
+    if len(_local_dirs) == 1:
+        builder = tfds.builder_from_directory(_local_dirs[0])
+    elif len(_local_dirs) > 1:
+        # Multi-version: pick highest semver-style version (lexicographic on
+        # zero-padded numeric components). Surfaces noisily so a regression
+        # in dataset DL flow doesn't silently pick a stale version.
+        def _version_key(p: str) -> tuple:
+            v = os.path.basename(p)
+            try:
+                return tuple(int(x) for x in v.split("."))
+            except ValueError:
+                return (0,)
+        _local_dirs.sort(key=_version_key, reverse=True)
+        overwatch.warning(
+            f"Multiple local versions for {name!r} at {_name_root}: "
+            f"{[os.path.basename(p) for p in _local_dirs]}. Picking newest."
+        )
+        builder = tfds.builder_from_directory(_local_dirs[0])
+    else:
+        builder = tfds.builder(name, data_dir=data_dir)
 
     # load or compute dataset statistics
     if isinstance(dataset_statistics, str):

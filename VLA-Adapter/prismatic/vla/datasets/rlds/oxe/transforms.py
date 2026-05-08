@@ -34,14 +34,21 @@ def bridge_oxe_dataset_transform(trajectory: Dict[str, Any]) -> Dict[str, Any]:
 
     Note =>> In original Bridge V2 dataset, the first timestep has an all-zero action, so we remove it!
     """
-    for key in trajectory.keys():
-        if key == "traj_metadata":
-            continue
-        elif key in ["observation", "action"]:
-            for key2 in trajectory[key]:
-                trajectory[key][key2] = trajectory[key][key2][1:]
-        else:
-            trajectory[key] = trajectory[key][1:]
+    # v37 fix: TF autograph traces dict iteration / .keys() unreliably for
+    # dlimp-wrapped trajectory dicts (returns SymbolicTensor where dict was
+    # expected). Hardcode the subkey lists for our actually-on-disk schema
+    # (verified via tfds.builder_from_directory; see configs.py "bridge").
+    # The _len/_traj_index/_frame_index keys are dlimp-internal but the
+    # original upstream loop sliced them too; preserve that for parity even
+    # though restructure() at dataset.py:142 rebuilds a clean dict that
+    # discards them downstream.
+    for k in ("image", "state", "natural_language_instruction", "natural_language_embedding"):
+        trajectory["observation"][k] = trajectory["observation"][k][1:]
+    for k in ("terminate_episode", "open_gripper", "rotation_delta", "world_vector"):
+        trajectory["action"][k] = trajectory["action"][k][1:]
+    for k in ("is_first", "is_last", "is_terminal", "reward",
+              "_len", "_traj_index", "_frame_index"):
+        trajectory[k] = trajectory[k][1:]
 
     trajectory["action"] = tf.concat(
         (
@@ -359,7 +366,12 @@ def stanford_hydra_dataset_transform(trajectory: Dict[str, Any]) -> Dict[str, An
         axis=-1,
     )
 
-    trajectory["observation"]["eef_state"] = tf.concat(
+    # NOTE [v37 patch]: configs.py declares state_obs_keys=["EEF_state",
+    # "gripper_state"] (uppercase) for stanford_hydra; this transform must
+    # write the uppercase key to match. Original upstream wrote lowercase
+    # "eef_state" which silently broke proprio extraction with KeyError at
+    # restructure time. Single-line case fix; no semantic change.
+    trajectory["observation"]["EEF_state"] = tf.concat(
         (
             trajectory["observation"]["state"][:, :3],
             trajectory["observation"]["state"][:, 7:10],
@@ -877,6 +889,7 @@ def aloha_dataset_transform(trajectory: Dict[str, Any]) -> Dict[str, Any]:
 # === Registry ===
 OXE_STANDARDIZATION_TRANSFORMS = {
     "bridge_oxe": bridge_oxe_dataset_transform,
+    "bridge": bridge_oxe_dataset_transform,  # v37: GCS bucket data is bridge_oxe format (action FeaturesDict)
     "bridge_orig": bridge_orig_dataset_transform,
     "bridge_dataset": bridge_orig_dataset_transform,
     "ppgm": ppgm_dataset_transform,

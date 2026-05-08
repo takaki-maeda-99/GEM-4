@@ -76,6 +76,18 @@ OXE_DATASET_CONFIGS = {
         "state_encoding": StateEncoding.POS_EULER,
         "action_encoding": ActionEncoding.EEF_POS,
     },
+    "bridge": {  # v37: GCS bucket gs://gresearch/robotics/bridge/0.1.0/.
+        # Verified at runtime via tfds.builder_from_directory:
+        #   action = FeaturesDict(world_vector(3) + rotation_delta(3) + open_gripper + terminate_episode)
+        #   observation = FeaturesDict(image[480,640,3], state(7,), natural_language_*)
+        # → bridge_oxe FORMAT (not bridge_orig). Mirror bridge_oxe config; data has
+        # only single `image` (no `image_1`), so secondary key reads as padding.
+        "image_obs_keys": {"primary": "image", "secondary": None, "wrist": None},
+        "depth_obs_keys": {"primary": None, "secondary": None, "wrist": None},
+        "state_obs_keys": ["EEF_state", "gripper_state"],
+        "state_encoding": StateEncoding.POS_EULER,
+        "action_encoding": ActionEncoding.EEF_POS,
+    },
     "bridge_orig": {  # Original version of Bridge V2 from project website
         "image_obs_keys": {"primary": "image_0", "secondary": "image_1", "wrist": None},
         "depth_obs_keys": {"primary": None, "secondary": None, "wrist": None},
