@@ -289,6 +289,44 @@ flowchart LR
 
 ### `MimicAnno/` — オフライン subtask アノテーション
 
+**役割**: LeRobot v3 episode に subtask boundary + ラベルを付け、 SARM 学習可能 dataset に export するオフラインツール。
+
+**できること**:
+- **Phase 1** — signal-driven boundary 検出 (gripper transition / EEF 速度 / action-norm change point)
+- **Phase 2** — Gemma 4 VLM で segment ごとに phase ラベリング (allowed-label + JSON schema 強制、 不正出力で fail-fast)
+- **Phase 3** — SAM3 で task-text-driven object tracking、 boundary score へ統合
+- **Phase 4** — 同ラベル merge + min-duration absorb + Viterbi relabel
+- **Export** — per-frame `subtask_index` + episode-level subtask list、 atomic publish、 idempotent re-run
+- React / Vite read-only timeline + waveform viewer
+- YAML で任意の LeRobot v3 layout に対応 (so100 / koch / aloha / SO-101 generic)
+- (in-progress) Phase 5 — 自律ラベル + 編集 UI
+
+**内部フロー**:
+
+```mermaid
+flowchart LR
+    In[("LeRobot v3 episode<br/>+ task text")]
+    P1["Phase 1<br/>signal boundaries<br/>(gripper / EEF / action)"]
+    P2["Phase 2<br/>Gemma 4 VLM<br/>phase labeling"]
+    P3["Phase 3<br/>SAM3 object tracking"]
+    P4["Phase 4<br/>same-label merge<br/>+ Viterbi"]
+    P5["Phase 5<br/>autonomous label<br/>+ edit UI"]
+    Pub["atomic publish<br/>(idempotent)"]
+    Out[("SARM-trainable LeRobot v3<br/>+ subtask_index<br/>+ sidecar parquet")]
+
+    In --> P1 --> P2 --> P3 --> P4 --> Pub --> Out
+    P5 -.-> Pub
+
+    classDef vlm fill:#e8f5e9,stroke:#2e7d32,color:#1b5e20
+    classDef inprogress fill:#fff8e1,stroke:#f9a825,color:#f57f17,stroke-dasharray:5 2 2 2,stroke-width:2px
+    classDef data fill:#f3e5f5,stroke:#6a1b9a,color:#4a148c
+    class P2,P3 vlm
+    class P5 inprogress
+    class In,Out data
+```
+
+**詳細**: → [`MimicAnno/README.md`](./MimicAnno/README.md)
+
 ### `CAD_Library/` — ウェアラブルハードウェア
 
 ## Quickstart
