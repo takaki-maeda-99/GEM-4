@@ -40,6 +40,13 @@ NUM_VISION_PLACEHOLDERS      = 256  # backward-compat alias
 # Proprio placeholder ID (1 個)。vision placeholder range の直後。
 PROPRIO_PLACEHOLDER_IDX = 259461
 
+# Native Gemma 4 image token ID (multimodal pretrain で使われる、`<|image|>` token).
+# 2026-04-26: vision placeholder mode ablation 用。
+# `VLA_VISION_PLACEHOLDER_MODE=image_token` 時に loader が unique <unused> ID 列の代わりに
+# IMAGE_TOKEN_ID を num_vision_tokens 個並べる。PLE が pretrain 由来の値になる仮説検証。
+# tokenizer 検証: ID=258880 == `<|image|>` (added_tokens_decoder 内)
+IMAGE_TOKEN_ID = 258880
+
 # End-of-sequence token ID (Gemma 4 の eos).
 # Qwen の `</s>` = 2 とは別物。Gemma の config を確認:
 #   cfg.text_config.eos_token_id == 1

@@ -29,14 +29,16 @@ class L1RegressionActionHead(nn.Module):
         use_pro_version=False,
         use_xvla_style=False,       # 2026-04-24 #014: X-VLA 準拠 self-attn pool 単一化 (Bridge cross-attn 撤去)
         use_proper_ffn=False,       # 2026-04-24 #016: pre-LN + 4× FFN + dual residual
+        num_blocks=24,              # 2026-04-25 #021: configurable。Gemma4 E2B=35 層対応など用。
     ):
         super().__init__()
         self.num_task_tokens = num_task_tokens
         self.action_dim = action_dim
         self.hidden_dim = hidden_dim
         self.use_xvla_style = use_xvla_style
+        self.num_blocks = num_blocks
         self.model = MLPResNet(
-            num_blocks=24,
+            num_blocks=num_blocks,
             input_dim=input_dim*ACTION_DIM,
             hidden_dim=hidden_dim,
             output_dim=action_dim,

@@ -243,10 +243,14 @@ class LiberoDataset(IterableDataset):
 # Batch transform + collate
 # ===========================================================
 def _build_input_ids(tokenizer, language: str, num_vision_tokens: int = NUM_VISION_TOKENS) -> torch.Tensor:
-    """Layout (2026-04-26 vision-first 入れ替え; env var で旧 prompt-first にも切替可):
-      default:                  [BOS] + V(num_vision_tokens) + prompt(20) + [PROPRIO] + A(64) + [EOS]
-      VLA_OLD_PROMPT_FIRST=1:   [BOS] + prompt(20) + V(num_vision_tokens) + [PROPRIO] + A(64) + [EOS]
+    """Layout (env var で複数 axis 切替可):
+      default:                                [BOS] + V(num_vision_tokens) + prompt(20) + [PROPRIO] + A(64) + [EOS]
+      VLA_OLD_PROMPT_FIRST=1:                  [BOS] + prompt(20) + V(num_vision_tokens) + [PROPRIO] + A(64) + [EOS]
+      VLA_VISION_PLACEHOLDER_MODE=image_token: V を unique <unused> ID 列の代わりに IMAGE_TOKEN_ID(258880) × num_vision_tokens で構築
+                                               (PLE が pretrain 由来の値になる仮説検証用、2026-04-26 ablation)
     """
+    from prismatic.vla.constants_gemma4 import IMAGE_TOKEN_ID  # 局所 import (循環回避)
+
     text = f"What action should the robot take to {language.lower().strip()}?"
     ids = tokenizer(text, add_special_tokens=False).input_ids
     if len(ids) > PROMPT_MAX_LEN:
@@ -254,7 +258,10 @@ def _build_input_ids(tokenizer, language: str, num_vision_tokens: int = NUM_VISI
     else:
         pad = [tokenizer.pad_token_id] * (PROMPT_MAX_LEN - len(ids))
         ids = ids + pad
-    vision_block = list(range(VISION_PLACEHOLDER_BEGIN_IDX, VISION_PLACEHOLDER_BEGIN_IDX + num_vision_tokens))
+    if os.environ.get("VLA_VISION_PLACEHOLDER_MODE", "unused") == "image_token":
+        vision_block = [IMAGE_TOKEN_ID] * num_vision_tokens
+    else:
+        vision_block = list(range(VISION_PLACEHOLDER_BEGIN_IDX, VISION_PLACEHOLDER_BEGIN_IDX + num_vision_tokens))
     if os.environ.get("VLA_OLD_PROMPT_FIRST", "0") == "1":
         head = [tokenizer.bos_token_id] + ids + vision_block
     else:

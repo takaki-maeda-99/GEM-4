@@ -33,6 +33,7 @@ from transformers.models.gemma4.image_processing_gemma4 import Gemma4ImageProces
 from prismatic.models.action_heads import L1RegressionActionHead
 from prismatic.vla.constants_gemma4 import (
     ACTION_TOKEN_BEGIN_IDX,
+    IMAGE_TOKEN_ID,
     NUM_ACTION_TOKENS,
     PROPRIO_PLACEHOLDER_IDX,
     VISION_PLACEHOLDER_BEGIN_IDX,
@@ -111,9 +112,12 @@ class VLAAdapterGemma4(nn.Module):
         # num_pretrain_datasets=0 (default) で soft_prompt 無効化、Stage 1-2 と backward compatible
         num_pretrain_datasets: int = 0,
         num_soft_prompt_tokens: int = 32,
-        # --- Dual-Track (Task 11): "quality" | "speed" ---
+        # --- Dual-Track (Task 11): "quality" | "speed" | "frozen" (2026-04-25 #020) ---
         #   quality: action_queries trainable + LLM grad 流れる (GC/LoRA 併用前提、finetune side)
         #   speed:   action_queries frozen (zero init)、forward 内で LLM を torch.no_grad() で wrap
+        #   frozen:  paper-faithful "Table 3 frozen backbone" 相当。LLM params frozen + GC 有効 +
+        #            action_queries trainable + LLM 呼び出しは通常 grad 経路 (no_grad wrap しない)。
+        #            LoRA も無し。AQ が grad を受け取るために no_grad wrap を外すのが肝。
         training_mode: str = "quality",
         # --- Scene vision backbone ablation (2026-04-22): "gemma4_native" | "dinosiglip" | "siglip" ---
         # gemma4_native: Gemma 4 純正 vision_tower + embed_vision (Task 6 以降の default)
@@ -143,10 +147,15 @@ class VLAAdapterGemma4(nn.Module):
         # "per_layer" (default、Option B): SigLIP 前 25 層を block i に 1:1 mapping で渡す
         # "final_broadcast" (Option A、encoder-decoder 教科書通り): SigLIP 最終層を全 block に broadcast
         wrist_bridge_layer_mode: str = "per_layer",
+        # --- 2026-04-25 #021: num_action_head_blocks ---
+        # action_head の block 数。Bridge cross-attn は (num_blocks+1) 層の LLM hidden を要求
+        # (block i が hidden[i+1] を見る、+1 は embed)。24 = paper default、35 = Gemma4 E2B 全層使用。
+        # num_blocks+1 ≤ LLM 層数 + 1 (embed) である必要あり (E2B=36、E4B=36 相当)。
+        num_action_head_blocks: int = 24,
     ):
         super().__init__()
-        assert training_mode in ("quality", "speed"), \
-            f"training_mode must be 'quality' or 'speed', got {training_mode!r}"
+        assert training_mode in ("quality", "speed", "frozen"), \
+            f"training_mode must be 'quality' / 'speed' / 'frozen', got {training_mode!r}"
         assert vision_backbone_type in ("gemma4_native", "dinosiglip", "siglip"), \
             f"vision_backbone_type must be 'gemma4_native' / 'dinosiglip' / 'siglip', got {vision_backbone_type!r}"
         self.training_mode = training_mode
@@ -261,6 +270,7 @@ class VLAAdapterGemma4(nn.Module):
 
         self.feature_norm = feature_norm if feature_norm is not None else nn.Identity()
 
+        self.num_action_head_blocks = num_action_head_blocks
         self.action_head = L1RegressionActionHead(
             input_dim=llm_dim,
             hidden_dim=llm_dim,
@@ -269,6 +279,7 @@ class VLAAdapterGemma4(nn.Module):
             use_pro_version=True,
             use_xvla_style=use_xvla_style,
             use_proper_ffn=use_proper_ffn,
+            num_blocks=num_action_head_blocks,
         )
         self.use_xvla_style = use_xvla_style
 
@@ -297,16 +308,18 @@ class VLAAdapterGemma4(nn.Module):
               f"use_xvla_style={use_xvla_style}, use_wrist_bridge={use_wrist_bridge}, "
               f"use_proper_ffn={use_proper_ffn})")
         _scale = (llm_dim / 1536.0) ** 2  # ActionHead dominates and scales as llm_dim^2
+        # 2026-04-25 #021: num_blocks を 24 から変える場合、params も線形スケール
+        _block_scale = num_action_head_blocks / 24.0
         # option (a) = Bridge 維持 + scene concat (新規 param なし)、
         # option B (#015) = wrist_bridge で +115M (E2B)、
         # option #016 = proper FFN で +400M (E2B、4× expansion × 24 block)
-        _lower = 400.0 * _scale
-        _upper = 750.0 * _scale
+        _lower = 400.0 * _scale * _block_scale
+        _upper = 750.0 * _scale * _block_scale
         if use_proper_ffn:
-            _upper = 1300.0 * _scale
+            _upper = 1300.0 * _scale * _block_scale
         assert _lower < total_trainable < _upper, \
             f"trainable params out of expected range: got {total_trainable:.3f} M " \
-            f"(expected {_lower:.0f}-{_upper:.0f} M for llm_dim={llm_dim})"
+            f"(expected {_lower:.0f}-{_upper:.0f} M for llm_dim={llm_dim}, num_blocks={num_action_head_blocks})"
 
     # -----------------------------------------------------------------
     # 便宜 property
@@ -536,15 +549,33 @@ class VLAAdapterGemma4(nn.Module):
             else:
                 wrist_pv_siglip = self._siglip_transform_batch(wrist_pixel_values.float())
             # timm VisionTransformer の get_intermediate_layers: n=layer indices list で per-layer 出力取得
-            NUM_BRIDGE_LAYERS = 25  # action_head 24 block + layer 0、hidden_subset と symmetric
+            # 2026-04-25 #021: num_action_head_blocks に応じて NUM_BRIDGE_LAYERS = num_blocks + 1
+            # (block i が layer i+1 を見るので、embed + num_blocks 層 = num_blocks + 1)
+            NUM_BRIDGE_LAYERS = self.num_action_head_blocks + 1  # default: 24+1=25 (paper相当)
+            # SigLIP の層数 (SigLIP-So400m は 27 blocks)。NUM_BRIDGE_LAYERS > _siglip_n の場合、
+            # per_layer 1:1 mapping は不可能なので等間隔 index サンプリングで対応する。
+            _siglip_n = len(self.vision_backbone.featurizer.blocks)
             # 2026-04-24 #019: layer mode 分岐
             if self.wrist_bridge_layer_mode == "per_layer":
-                # Option B default: 前 25 層を block i に 1:1 mapping
+                if NUM_BRIDGE_LAYERS <= _siglip_n:
+                    # paper default: 先頭 N 層を 1:1 mapping
+                    _siglip_indices = list(range(NUM_BRIDGE_LAYERS))
+                else:
+                    # 2026-04-25 #021: N > 27 の場合、等間隔サンプルして重複許容 + torch.stack で構築
+                    # get_intermediate_layers は重複 dedup するので、individual に取って stack
+                    import numpy as _np
+                    _siglip_indices = _np.round(
+                        _np.linspace(0, _siglip_n - 1, NUM_BRIDGE_LAYERS)
+                    ).astype(int).tolist()
                 with torch.no_grad():
-                    per_layer_feats = self.vision_backbone.featurizer.get_intermediate_layers(
-                        wrist_pv_siglip, n=list(range(NUM_BRIDGE_LAYERS))
+                    # unique index で 1 回取り、index list に従って stack
+                    _unique_sorted = sorted(set(_siglip_indices))
+                    _uniq_feats = self.vision_backbone.featurizer.get_intermediate_layers(
+                        wrist_pv_siglip, n=_unique_sorted
                     )
-                stacked = torch.stack(per_layer_feats, dim=1)  # (B, num_layers=25, 256, 1152)
+                    _idx_to_feat = {idx: _uniq_feats[i] for i, idx in enumerate(_unique_sorted)}
+                    per_layer_feats = [_idx_to_feat[i] for i in _siglip_indices]
+                stacked = torch.stack(per_layer_feats, dim=1)  # (B, NUM_BRIDGE_LAYERS, 256, 1152)
             else:  # "final_broadcast"
                 # Option A: SigLIP 最終層を全 block に broadcast (encoder-decoder 教科書)
                 # timm get_intermediate_layers は重複 index を dedup するので、単層取得後に expand
@@ -561,18 +592,30 @@ class VLAAdapterGemma4(nn.Module):
             h_w_bridge = self.wrist_projector_bridge(stacked)
 
         # ---- PLE 事前計算 (OOM 回避) ----
+        # Gemma 4 E2B/E4B は PLE 有効 (hidden_size_per_layer_input>0)、
+        # 26B-A4B 等 MoE variant は無効 (=0) で per_layer_inputs=None 経路。
+        # HF Gemma4TextModel.forward は self.hidden_size_per_layer_input をチェックして分岐するので
+        # None 渡しで正しく無視される。
+        _ple_enabled = getattr(llm.config, "hidden_size_per_layer_input", 0) > 0
         with torch.no_grad():
-            per_layer_inputs = llm.get_per_layer_inputs(input_ids, None)   # (B, L, num_layers=35, ple_dim=256)
-            raw_embeddings = llm.embed_tokens(input_ids)                   # (B, L, llm_dim=1536)
+            if _ple_enabled:
+                per_layer_inputs = llm.get_per_layer_inputs(input_ids, None)   # (B, L, num_layers, ple_dim)
+            else:
+                per_layer_inputs = None
+            raw_embeddings = llm.embed_tokens(input_ids)                   # (B, L, llm_dim)
         embeddings = raw_embeddings.clone()
 
         # ---- Option A: 2 種類の placeholder を両方上書き (original input_ids 空間で) ----
         amask = (input_ids >= ACTION_TOKEN_BEGIN_IDX) & (
             input_ids < ACTION_TOKEN_BEGIN_IDX + NUM_ACTION_TOKENS
         )
-        vmask = (input_ids >= VISION_PLACEHOLDER_BEGIN_IDX) & (
+        # Vision: 2 mode 自動検出 (union mask)
+        #   (a) unique <unused> ID 列 (current default)
+        #   (b) IMAGE_TOKEN_ID(258880) × N (2026-04-26 ablation: PLE が pretrain 由来)
+        # Action range (258885-) と IMAGE_TOKEN_ID (258880) は離れているので衝突なし。
+        vmask = ((input_ids >= VISION_PLACEHOLDER_BEGIN_IDX) & (
             input_ids < VISION_PLACEHOLDER_BEGIN_IDX + self.num_vision_tokens
-        )
+        )) | (input_ids == IMAGE_TOKEN_ID)
         for b in range(B):
             apos = amask[b].nonzero(as_tuple=True)[0]
             vpos = vmask[b].nonzero(as_tuple=True)[0]
@@ -592,10 +635,11 @@ class VLAAdapterGemma4(nn.Module):
         position_ids = torch.arange(L_total, dtype=torch.long, device=device).unsqueeze(0).expand(B, -1)
 
         # ---- LLM forward (Gemma4TextModel 直接) ----
-        # Dual-Track Task 11:
-        #   speed mode は LLM call を torch.no_grad() で wrap (autograd graph 作らず、
-        #   activation 保存せず、backward 不可)。out.hidden_states は detached で返る。
-        #   quality mode は従来通り grad 流す (finetune 側で GC 有効化想定)。
+        # Dual-Track Task 11 + #020:
+        #   speed  mode は LLM call を torch.no_grad() で wrap (activation 保存せず、backward 不可)。
+        #   quality/frozen mode は通常 grad 経路。action_queries.weight → embeddings → LLM → hidden
+        #   の gradient を繋げるため、frozen mode でも no_grad wrap は外す (paper Table 3 設定)。
+        #   LLM 本体 params は frozen (requires_grad=False) でも、grad は activation 経由で AQ に流れる。
         if self.training_mode == "speed":
             with torch.no_grad():
                 out = llm(
@@ -606,7 +650,7 @@ class VLAAdapterGemma4(nn.Module):
                     attention_mask=attention_mask,
                     position_ids=position_ids,
                 )
-        else:  # quality
+        else:  # quality or frozen
             out = llm(
                 inputs_embeds=embeddings,
                 per_layer_inputs=per_layer_inputs,
@@ -621,9 +665,13 @@ class VLAAdapterGemma4(nn.Module):
         apos0 = amask[0].nonzero(as_tuple=True)[0]
         vpos0 = vmask[0].nonzero(as_tuple=True)[0]
 
-        # Bridge per-layer stack (25 層) は常に構築 (h_a, h_t cross-attn に使う)
-        all_hidden = torch.stack(out.hidden_states, dim=1)              # (B, 36, L_total, llm_dim)
-        hidden_subset = all_hidden[:, :25, :, :]                        # (B, 25, L_total, llm_dim)
+        # Bridge per-layer stack は常に構築 (h_a, h_t cross-attn に使う)
+        # 2026-04-25 #021: num_action_head_blocks+1 層を抽出 (embed + num_blocks 層)
+        _bridge_n = self.num_action_head_blocks + 1
+        all_hidden = torch.stack(out.hidden_states, dim=1)              # (B, LLM_layers+1, L_total, llm_dim)
+        assert all_hidden.size(1) >= _bridge_n, \
+            f"LLM has {all_hidden.size(1)-1} layers but action_head needs {self.num_action_head_blocks} blocks"
+        hidden_subset = all_hidden[:, :_bridge_n, :, :]                 # (B, _bridge_n, L_total, llm_dim)
 
         vision_hidden = self.feature_norm(hidden_subset[:, :, vpos0, :])  # (B, 25, num_vision_tokens, llm_dim)
         action_hidden = self.feature_norm(hidden_subset[:, :, apos0, :])  # (B, 25, 64, llm_dim)

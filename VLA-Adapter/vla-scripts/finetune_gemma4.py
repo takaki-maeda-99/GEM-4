@@ -162,6 +162,11 @@ class FinetuneConfig:
     optim_fused: bool = False                  # T1: AdamW(fused=True)、期待 5-15% forward+backward overhead 削減
     attn_implementation: str = "sdpa"          # sdpa: torch 2.11 native SDPA (Flash backend 組込); flash-attn 2.x は torch2.11 用 wheel なし
 
+    # --- 4-bit (NF4) quantization for large backbone (e.g. gemma-4-26B-A4B) ---
+    # backbone は frozen 前提。NF4 で weight を 4bit 化、compute は bf16。
+    # PLE 無効モデル (hidden_size_per_layer_input=0、26B-A4B 等) は modeling 側で per_layer_inputs=None 経路。
+    use_nf4: bool = False
+
     # --- Gemma 4 native vision (Task 6/13) ---
     max_soft_tokens: int = 280                 # ∈ {70, 140, 280, 560, 1120}、default 280 (pretrain natural)
                                                # Gemma4ImageProcessor に渡り、vision patch/soft token 数を決定
@@ -199,9 +204,17 @@ class FinetuneConfig:
     # この flag から分岐する。Task 9 は flag 定義のみ、logic は未配線。
     training_mode: str = "quality"             # "quality" (Mode A: action_queries trainable + GC + LoRA)
                                                #  | "speed"  (Mode B: action_queries frozen + LLM no_grad, no LoRA)
+                                               #  | "frozen" (Mode C #020: paper Table 3 frozen backbone。
+                                               #             action_queries trainable + LLM frozen + GC + no LoRA。
+                                               #             no_grad wrap を外し AQ に grad を届ける)
     lora_r: int = 16                           # Mode A: LoRA rank
     lora_alpha: int = 32                       # Mode A: LoRA alpha
     lora_target_modules: Tuple[str, ...] = ("q_proj", "k_proj", "v_proj", "o_proj")
+
+    # --- 2026-04-25 #021: action_head capacity ---
+    # action_head の block 数 (デフォルト paper 24)。Gemma4 E2B は 35 層あるので
+    # 35 で全層 Bridge 接続、LLM capacity を余さず活用する試行が可能。
+    num_action_head_blocks: int = 24
 
     # --- Smoke mode (Phase 2b) ---
     smoke_mode: bool = False                  # True: max_steps=100, save@50, resume check on
@@ -236,9 +249,9 @@ class FinetuneConfig:
     # fmt: on
 
     def __post_init__(self):
-        # Dual-Track (Task 9): training_mode validation
-        assert self.training_mode in ("quality", "speed"), \
-            f"training_mode must be 'quality' or 'speed', got {self.training_mode!r}"
+        # Dual-Track (Task 9 + #020): training_mode validation
+        assert self.training_mode in ("quality", "speed", "frozen"), \
+            f"training_mode must be 'quality' / 'speed' / 'frozen', got {self.training_mode!r}"
 
 
 def build_run_id(cfg: FinetuneConfig) -> str:
@@ -291,9 +304,24 @@ def build_model(cfg: FinetuneConfig, device: torch.device) -> tuple[VLAAdapterGe
         tok.pad_token = tok.eos_token
 
     from transformers import Gemma4ForConditionalGeneration
-    gemma = Gemma4ForConditionalGeneration.from_pretrained(
-        cfg.gemma_model_id, dtype=torch.bfloat16, attn_implementation=cfg.attn_implementation,
-    ).to(device).eval()
+    if cfg.use_nf4:
+        from transformers import BitsAndBytesConfig
+        bnb_cfg = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_use_double_quant=True,
+        )
+        gemma = Gemma4ForConditionalGeneration.from_pretrained(
+            cfg.gemma_model_id,
+            quantization_config=bnb_cfg,
+            device_map={"": device},
+            attn_implementation=cfg.attn_implementation,
+        ).eval()
+    else:
+        gemma = Gemma4ForConditionalGeneration.from_pretrained(
+            cfg.gemma_model_id, dtype=torch.bfloat16, attn_implementation=cfg.attn_implementation,
+        ).to(device).eval()
     gemma.config.use_cache = True                       # R6: use_cache=True 必須
     # gemma.gradient_checkpointing_enable()             # R6: GC 永久禁止 (HF #45242)
     for p in gemma.parameters():
@@ -322,7 +350,17 @@ def build_model(cfg: FinetuneConfig, device: torch.device) -> tuple[VLAAdapterGe
         use_wrist_bridge=cfg.use_wrist_bridge,             # 2026-04-24 #015: wrist per-layer Bridge cross-attn
         use_proper_ffn=cfg.use_proper_ffn,                 # 2026-04-24 #016: standard pre-LN Transformer block
         wrist_bridge_layer_mode=cfg.wrist_bridge_layer_mode, # 2026-04-24 #019: per_layer | final_broadcast
-    ).to(device, dtype=torch.bfloat16)
+        num_action_head_blocks=cfg.num_action_head_blocks, # 2026-04-25 #021: configurable action_head depth
+    )
+    if cfg.use_nf4:
+        # NF4 backbone (self.llm) は bnb Linear4bit を含むので .to(dtype=bf16) 不可。
+        # Adapter 側 (action_head, projector, action_queries 等) のみ device + bf16 へ。
+        for _name, _child in model_vla.named_children():
+            if _name == "llm":
+                continue
+            _child.to(device=device, dtype=torch.bfloat16)
+    else:
+        model_vla = model_vla.to(device, dtype=torch.bfloat16)
     model_vla.train()
 
     # --- Dual-Track (Task 10/11): mode-specific setup ---
@@ -372,6 +410,20 @@ def build_model(cfg: FinetuneConfig, device: torch.device) -> tuple[VLAAdapterGe
         model_vla.action_queries.weight.data.zero_()
         model_vla.action_queries.weight.requires_grad = False
         print("[mode-B] action_queries frozen (zero init); LLM no_grad wrap active; no GC; no LoRA")
+    elif cfg.training_mode == "frozen":
+        # Mode C (2026-04-25 #020): paper VLA-Adapter Table 3 "frozen backbone" を Gemma4 で再現。
+        # LLM params は frozen (build_model 冒頭 L299-300 で requires_grad=False 済)、
+        # action_queries は **trainable** で default 初期化のまま。LoRA 無し。
+        # 肝: VLAAdapterGemma4.forward は training_mode='frozen' で no_grad wrap を skip するので、
+        #    action_queries.weight → embeddings → LLM (frozen params, grad 流れる) → hidden → action_head
+        #    の gradient 経路が繋がり、AQ が本当に学習される。
+        # GC: 2026-04-25 #020 revision - GC を OFF に切り替え (step time 6s→3s 目標)。
+        #    80GB GPU なら activation 全保存でも余裕 (推定 ~20GB 追加)、GC の fwd 2x cost を回避。
+        #    40GB に戻す場合は gradient_checkpointing_enable() を復活させる。
+        assert model_vla.action_queries.weight.requires_grad is True, \
+            "action_queries should be trainable in frozen mode (default from nn.Embedding init)"
+        # GC OFF (user request 2026-04-25): paper-faithful run の ETA 短縮が目的。
+        print("[mode-frozen] action_queries trainable; LLM params frozen; GC DISABLED; no_grad wrap skipped; no LoRA")
 
     # Task 13 fixup C: Stage 2 stale な 675.138 M tight assertion を log-only に置換。
     # Mode A+LoRA ≈ 546M, Mode B ≈ 541M と mode 次第で値が振れるため、
@@ -449,10 +501,20 @@ def build_pretrain_dataloader(cfg: FinetuneConfig, tok, num_vision_tokens: int =
     """
     sys.path.insert(0, str(REPO_ROOT / "scripts" / "stage3"))
     from taco_solo_loader import TacoSoloDataset, collate_taco_solo
-    dataset = TacoSoloDataset(
-        data_dir=str(REPO_ROOT / "data" / "stage3_openx"),
-        num_actions_chunk=cfg.num_action_chunks,
-    )
+    # 2026-04-26 #024: num_pretrain_datasets >= 2 で Multi-dataset (Taco + Fractal) に dispatch。
+    if cfg.num_pretrain_datasets >= 2:
+        from multi_solo_loader import MultiSoloDataset
+        dataset = MultiSoloDataset(
+            data_dir=str(REPO_ROOT / "data" / "stage3_openx"),
+            num_actions_chunk=cfg.num_action_chunks,
+        )
+        print("[build_pretrain_dataloader] Using MultiSoloDataset (Taco 0.30 + Fractal 0.70)")
+    else:
+        dataset = TacoSoloDataset(
+            data_dir=str(REPO_ROOT / "data" / "stage3_openx"),
+            num_actions_chunk=cfg.num_action_chunks,
+        )
+        print("[build_pretrain_dataloader] Using TacoSoloDataset (single)")
     num_workers = getattr(cfg, "pretrain_num_workers", 4)
     return DataLoader(
         dataset,
@@ -581,17 +643,20 @@ def update_pretrain_lrs(optimizer: AdamW, step: int, cfg: FinetuneConfig) -> dic
     freeze = cfg.pretrain_freeze_steps
     warmup = cfg.pretrain_warmup_steps
     base_map = {
-        "wrist_encoder":       base_lr,          # random init、Phase 1 で freeze 対象
-        "proprio_projector":   base_lr,
-        "action_head":         base_lr,
-        "action_queries":      base_lr,          # Mode A のみ optimizer に存在
-        "soft_prompt_library": base_lr * coef,   # X-VLA soft_prompts (coef 適用)
-        "lora":                base_lr,          # Mode A のみ
-        "vision_projector":    base_lr,          # DinoSigLIP ablation path のみ optimizer に存在
+        "wrist_encoder":         base_lr,          # random init、Phase 1 で freeze 対象
+        "proprio_projector":     base_lr,
+        "action_head":           base_lr,
+        "action_queries":        base_lr,          # Mode A のみ optimizer に存在
+        "soft_prompt_library":   base_lr * coef,   # X-VLA soft_prompts (coef 適用)
+        "lora":                  base_lr,          # Mode A のみ
+        "vision_projector":      base_lr,          # DinoSigLIP ablation path のみ optimizer に存在
+        "wrist_projector_bridge": base_lr,         # 2026-04-25 #023: Option B wrist_bridge=True 時のみ存在
+        "feature_norm":          base_lr,          # 2026-04-25 #023: feature_norm_type=layer_norm のみ
     }
     # freeze 中 LR=0 にする group: random init の新規 vision-side module (wrist_encoder, vision_projector)
     # Gemma4 native vision (scene tower) は frozen なので対象外。
-    FROZEN_PHASE1 = {"wrist_encoder", "vision_projector"}
+    # wrist_projector_bridge も random init wrist 系なので Phase 1 freeze 対象。
+    FROZEN_PHASE1 = {"wrist_encoder", "vision_projector", "wrist_projector_bridge"}
     current = {}
     for g in optimizer.param_groups:
         name = g["name"]
@@ -1007,6 +1072,12 @@ def finetune(cfg: FinetuneConfig) -> None:
         ESCALATION9_HALT_THRESHOLD = _expected * 2.5
     elif cfg.training_mode == "speed":
         _expected = 0.2 + 0.046 * cfg.batch_size
+        ESCALATION9_WARN_THRESHOLD = _expected * 1.3
+        ESCALATION9_HALT_THRESHOLD = _expected * 2.5
+    elif cfg.training_mode == "frozen":
+        # #020: frozen mode は GC + grad 流れるので quality に近い step time (LoRA 無いので少し軽い)。
+        # quality と同じ formula で開始、実測で調整。
+        _expected = 0.3 + 0.082 * cfg.batch_size
         ESCALATION9_WARN_THRESHOLD = _expected * 1.3
         ESCALATION9_HALT_THRESHOLD = _expected * 2.5
     else:
