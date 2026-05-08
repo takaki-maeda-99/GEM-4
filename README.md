@@ -380,11 +380,35 @@ Three entry points:
 
 ## Status & Roadmap
 
+Three buckets, matching the system overview mermaid: **Shipped / In progress / Roadmap**.
+
 ### Shipped
+
+- **(shipped)** LIBERO-Spatial 94 % (X-VLA-Adapter v33) — see [Reproducibility](#reproducibility) for config + eval cmd + checkpoint
+- **(shipped)** Operator-supervised scripted demo of three real-robot tasks (take from shelf / open lid / hold)
+- **(shipped)** MimicAnno Phase 1-4 annotation pipeline (signal boundary / Gemma 4 VLM / SAM3 / Viterbi)
+- **(shipped)** MimicRec end-to-end (collect → review → replay) on SO-101 / reBot Arm / Isaac Sim
+- **(shipped)** Wearable hardware prototype (`CAD_Library/`) — STEP / SLDASM / SLDPRT published
+- **(shipped)** 8-bit AdamW (`bitsandbytes`) for training-time optimizer-state compression
 
 ### In progress
 
+- **(in-progress)** X-VLA-Adapter Phase 0 inference server — HoldPosition stub passes wire smoke; the real-model `XVLAAdapterChunkPredictor` is a stub awaiting v36 checkpoints
+- **(in-progress)** Cross-embodiment X-VLA — v34 / v35 multi-domain RLDS **currently training**, eval pending
+- **(in-progress)** MimicAnno Phase 5 — autonomous labeling + edit UI (autonomy mode in flight)
+- **(in-progress)** MimicRec in-app annotator — stub (real implementation lives in MimicAnno)
+
 ### Roadmap — NOT IMPLEMENTED
+
+> The items below are **not started**. They are listed here so they cannot be confused with shipped capability.
+
+- **Scale data**:
+  - **(planned)** New MimicRec adapter: first-person human hand video → hand-skeleton estimation → EE Δ + gripper representation → action data → transfer learning to scale data collection
+- **Architecture**:
+  - **(planned)** Hierarchical inference using MimicAnno subtasks: high-level subtask planner + low-level skill executor (a stage past the current monolithic VLA). MimicAnno already produces the training data; the inference-side hierarchy is unbuilt.
+- **Deployment**:
+  - **(planned)** Inference-side NF4 / HQQ quantization. Smoke scripts from the pre-refactor monolithic layout (e.g. `test_nf4_26b_smoke.py`) were removed in commit `084d0ba` and have not been ported to X-VLA-Adapter yet.
+  - **(planned)** Jetson on-device real-time inference loop (TensorRT + quantized inference integration).
 
 ## Acknowledgements
 

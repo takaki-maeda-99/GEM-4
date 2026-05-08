@@ -380,11 +380,35 @@ git lfs install && git lfs pull            # CAD_Library の STEP / SLDASM を�
 
 ## Status & Roadmap
 
+3 段に分けて進捗を視覚的に明示する: **Shipped / In progress / Roadmap**。 system overview mermaid の凡例 (緑 / 黄 dot-dash / 橙 dashed) と対応。
+
 ### Shipped
+
+- **(shipped)** LIBERO-Spatial 94 % (X-VLA-Adapter v33) — 再現情報は [Reproducibility](#reproducibility) (config + eval cmd + checkpoint 公開)
+- **(shipped)** 実機 3 タスク operator-supervised scripted demo (棚から取る / フタを開ける / 支える)
+- **(shipped)** MimicAnno Phase 1-4 アノテパイプライン (signal boundary / Gemma 4 VLM / SAM3 / Viterbi)
+- **(shipped)** MimicRec end-to-end (collect → review → replay) on SO-101 / reBot Arm / Isaac Sim
+- **(shipped)** ハードウェア prototype (`CAD_Library/`) が装着可能、 STEP / SLDASM / SLDPRT 公開
+- **(shipped)** 学習時 8-bit AdamW (`bitsandbytes`) による optimizer-state 圧縮
 
 ### In progress
 
+- **(in-progress)** X-VLA-Adapter Phase 0 推論サーバ — HoldPosition stub の wire smoke は通る。 実モデル `XVLAAdapterChunkPredictor` は v36 ckpt 待ちの stub
+- **(in-progress)** Cross-embodiment X-VLA — v34 / v35 multi-domain RLDS で **学習中**、 eval 待ち
+- **(in-progress)** MimicAnno Phase 5 — 自律ラベル + 編集 UI、 自律モード進行中
+- **(in-progress)** MimicRec の in-app annotator — stub 段階 (本実装は MimicAnno に外出し)
+
 ### Roadmap — NOT IMPLEMENTED
+
+> 以下は **未着手** の研究方針です。 shipped / in-progress と混同しないために明示的に分けています。
+
+- **Scale data**:
+  - **(planned)** MimicRec の新アダプター: 人の一人称視点動画 → 手骨格推定 → EE Δ + Gripper 表現にマッピング → アクションデータ生成 → 転移学習でデータ収集をスケール
+- **Architecture**:
+  - **(planned)** MimicAnno の subtask を活用した階層的推論: high-level subtask planner + low-level skill executor の二層構成 (現在の monolithic VLA を超えるフェーズ)。 MimicAnno は学習データを既に出力できるが、 推論側の階層モデルは未実装。
+- **Deployment**:
+  - **(planned)** 推論側 NF4 / HQQ 量子化。 旧 monolithic 構造下の smoke スクリプト (`test_nf4_26b_smoke.py` 等) は refactor (`084d0ba`) で削除済、 X-VLA-Adapter には未移植。
+  - **(planned)** Jetson on-device real-time 推論ループ (TensorRT + 量子化推論統合)。
 
 ## Acknowledgements
 
