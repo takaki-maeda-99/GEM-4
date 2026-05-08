@@ -412,4 +412,12 @@ Three buckets, matching the system overview mermaid: **Shipped / In progress / R
 
 ## Acknowledgements
 
+- **Hackathon**: [The Gemma 4 Good Hackathon](https://www.kaggle.com/competitions/gemma-4-good-hackathon/) — Kaggle × Google DeepMind, 2026-04-02 → 2026-05-18
+- **Upstream**: VLA-Adapter (Wang et al., 2025) / X-VLA / SigLIP / Gemma 4 / LeRobot / SAM3 / LIBERO
+
 ## License
+
+- Root repository: **Apache-2.0** (see [`LICENSE`](./LICENSE))
+- All submodules (`MimicRec`, `MimicAnno`, `X-VLA-Adapter`): **Apache-2.0**
+- `CAD_Library/` SLDPRT / SLDASM / STEP: governed by the root LICENSE
+- Upstream libraries (LeRobot, SAM3, etc.) retain their own licenses

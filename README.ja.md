@@ -412,4 +412,12 @@ git lfs install && git lfs pull            # CAD_Library の STEP / SLDASM を�
 
 ## Acknowledgements
 
+- **Hackathon**: [The Gemma 4 Good Hackathon](https://www.kaggle.com/competitions/gemma-4-good-hackathon/) — Kaggle × Google DeepMind 主催、 2026-04-02 → 2026-05-18
+- **Upstream**: VLA-Adapter (Wang et al., 2025) / X-VLA / SigLIP / Gemma 4 / LeRobot / SAM3 / LIBERO
+
 ## License
+
+- root リポジトリ: **Apache-2.0** ([`LICENSE`](./LICENSE) 参照)
+- すべての submodule (`MimicRec`, `MimicAnno`, `X-VLA-Adapter`): **Apache-2.0**
+- `CAD_Library/` 内の SLDPRT / SLDASM / STEP: root LICENSE に従う
+- 上流ライブラリ (LeRobot, SAM3 等) は各々のライセンス
