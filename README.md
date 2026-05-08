@@ -341,6 +341,24 @@ flowchart LR
 
 ## Quickstart
 
+```bash
+git clone --recurse-submodules <url> && cd vla-gemma-4
+git submodule update --init --recursive   # if you forgot --recurse-submodules
+git lfs install && git lfs pull            # fetch CAD_Library STEP / SLDASM
+```
+
+Three entry points:
+
+| What you want to do | Where to go |
+|---|---|
+| Train (LIBERO sim) | → [`X-VLA-Adapter/README.md#Training`](./X-VLA-Adapter/README.md#training) |
+| Collect data (real / mock / sim) | → [`MimicRec/README.md#Quick-start`](./MimicRec/README.md#quick-start) |
+| Annotate (existing dataset) | → [`MimicAnno/README.md#Quickstart`](./MimicAnno/README.md#quickstart) |
+
+**What runs from root**: nothing today. Each submodule README is the single source of truth for its own runtime. An end-to-end (collect → annotate → train → infer → replay) command sequence will be added later.
+
+**Prerequisites**: Ubuntu 22.04 / 24.04, Python 3.12 (`uv` will pull it), Node 20+ (MimicRec frontend), NVIDIA GPU with CUDA 12.6+ (X-VLA-Adapter training). macOS / WSL may work for some submodules but is unverified.
+
 ## Safety & Scope
 
 ### Current safety measures
