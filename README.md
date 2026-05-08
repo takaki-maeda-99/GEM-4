@@ -196,6 +196,46 @@ Five reasons we chose this stack:
 
 ### `X-VLA-Adapter/` — VLA model & training & inference
 
+**Role**: SigLIP + Gemma4-E2B + per-domain projector + L1 action head — the VLA policy itself. LIBERO benchmark is the primary axis; the same repo also handles real-robot deployment.
+
+**Capabilities**:
+- Switch every architecture revision from a single train YAML (v3 → v37: LoRA / soft-prompt-in-LLM / wrist-into-LLM / DA-2-MLP / etc.)
+- Auto-sweep 50 ep × 4 suites × N steps from a single eval YAML
+- Phase 0 FastAPI inference server (compatible with the MimicRec `/predict` contract; HoldPosition stub today, real model predictor pending v36)
+- 4-domain RLDS + LeRobot dataloader, shared Q99 statistics
+- Layer-wise freezing, per-param-group LR coefficients, checkpoint resume
+- (planned) NF4 / HQQ quantization, Jetson on-device real-time loop
+
+**Design principles** (see `CLAUDE.md` in this submodule): strict separation between `data` / `models` / `policies` / `training` / `evaluation` / `deployment` / `robots`, fully config-driven, robust to overnight sweeps.
+
+**Headline result**: LIBERO-Spatial v33 = 94 % (47 / 50).
+
+**Internal flow**:
+
+```mermaid
+flowchart LR
+    D[("LeRobot v3 / RLDS<br/>+ subtask_index")]
+    I["instruction text"]
+    V["SigLIP<br/>chest + wrist"]
+    L["Gemma 4 E2B + PLE<br/>frozen"]
+    A["VLA-Adapter<br/>bridge attention<br/>trainable"]
+    H["L1 action head<br/>trainable"]
+    O["EE Δ + gripper<br/>action chunk"]
+    D --> V
+    I --> L
+    V --> A
+    L <--> A
+    A --> H --> O
+    classDef frozen fill:#eceff1,stroke:#455a64,color:#263238
+    classDef trainable fill:#e8f5e9,stroke:#2e7d32,color:#1b5e20
+    classDef data fill:#f3e5f5,stroke:#6a1b9a,color:#4a148c
+    class L frozen
+    class V,A,H trainable
+    class D data
+```
+
+**Details**: → [`X-VLA-Adapter/README.md`](./X-VLA-Adapter/README.md)
+
 ### `MimicRec/` — local-first data collection web app
 
 ### `MimicAnno/` — offline subtask annotation

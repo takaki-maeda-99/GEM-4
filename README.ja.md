@@ -196,6 +196,46 @@ flowchart TB
 
 ### `X-VLA-Adapter/` — VLA モデル / 学習 / 推論
 
+**役割**: SigLIP + Gemma4-E2B + per-domain projector + L1 action head の VLA policy 本体。 LIBERO benchmark を主軸に、 実ロボット deploy までを 1 リポで吸収。
+
+**できること**:
+- 1 ファイルの train YAML で全アーキ revision を切替 (v3 → v37: LoRA / soft-prompt-in-LLM / wrist-into-LLM / DA-2-MLP / etc.)
+- 1 ファイルの eval YAML で 50 ep × 4 suite × N step を自動 sweep
+- Phase 0 FastAPI 推論サーバ (MimicRec の `/predict` 契約準拠。 HoldPosition stub 段階、 実モデル predictor は v36 ckpt 待ち)
+- 4-domain RLDS + LeRobot 両 dataloader、 shared Q99 統計
+- 階層 freeze、 LR coef per param group、 checkpoint resume
+- (planned) NF4 / HQQ 量子化、 Jetson on-device real-time 推論ループ
+
+**設計原則** (本 submodule の `CLAUDE.md` 参照): `data` / `models` / `policies` / `training` / `evaluation` / `deployment` / `robots` を厳格に分離、 すべて config 駆動、 夜間 sweep でも壊れにくい。
+
+**結果ハイライト**: LIBERO-Spatial v33 = 94 % (47 / 50)。
+
+**内部フロー**:
+
+```mermaid
+flowchart LR
+    D[("LeRobot v3 / RLDS<br/>+ subtask_index")]
+    I["instruction text"]
+    V["SigLIP<br/>chest + wrist"]
+    L["Gemma 4 E2B + PLE<br/>frozen"]
+    A["VLA-Adapter<br/>bridge attention<br/>trainable"]
+    H["L1 action head<br/>trainable"]
+    O["EE Δ + gripper<br/>action chunk"]
+    D --> V
+    I --> L
+    V --> A
+    L <--> A
+    A --> H --> O
+    classDef frozen fill:#eceff1,stroke:#455a64,color:#263238
+    classDef trainable fill:#e8f5e9,stroke:#2e7d32,color:#1b5e20
+    classDef data fill:#f3e5f5,stroke:#6a1b9a,color:#4a148c
+    class L frozen
+    class V,A,H trainable
+    class D data
+```
+
+**詳細**: → [`X-VLA-Adapter/README.md`](./X-VLA-Adapter/README.md)
+
 ### `MimicRec/` — local-first データ収集 Web アプリ
 
 ### `MimicAnno/` — オフライン subtask アノテーション
