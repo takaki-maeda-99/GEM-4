@@ -238,6 +238,55 @@ flowchart LR
 
 ### `MimicRec/` — local-first データ収集 Web アプリ
 
+**役割**: 物理ロボから IL データを集めて LeRobot v3 で吐く Web アプリ。 Teleop / Hand-teach / Replay / VLA inference を 1 スタックで一気通貫。
+
+**できること**:
+- Teleop (leader arm / keyboard / sim) で記録、 Hand-teach は重力補償 + グリッパ摩擦補償付き (reBotArm)
+- Replay は arm + gripper 同期再生 + safety watchdog (joint position jump / velocity / acceleration の三段ゲート)
+- VLA HTTP contract YAML 1 枚で任意の VLA モデルを実機にぶら下げ
+- LeRobot v3 zip ダウンロード、 エピソード review (success / failure ラベル)
+- Settings UI: デバイス検出、 キャリブ状態、 アダプタ config 編集
+- ~250 backend tests、 500 Hz モータ制御は別 daemon で安全分離
+
+**対応ハード**: SO-101 / reBot Arm B601-DM / Mock / Isaac Sim (Franka 検証済)。 新ロボットは `RobotAdapter` protocol を 1 ファイル足すだけで UI に出る。
+
+**内部フロー**:
+
+```mermaid
+flowchart LR
+    Op["Operator<br/>(leader / kbd / sim)"]
+    HW["Robot HW<br/>SO-101 / reBotArm / Sim"]
+    subgraph Backend["MimicRec backend"]
+        Adapter["RobotAdapter"]
+        SM["SessionManager<br/>(asyncio control loop)"]
+        Replay["Replay +<br/>safety watchdog"]
+        VLA["VLA HTTP client"]
+        Writer["LeRobot v3 writer"]
+        StubAnno["In-app annotator<br/>(stub)"]
+    end
+    Out[("LeRobot v3<br/>episodes")]
+    Predict["External VLA server<br/>/predict"]
+
+    Op --> SM
+    HW --> Adapter --> SM
+    SM --> Writer --> Out
+    Out --> Replay --> HW
+    SM <--> VLA
+    VLA <--> Predict
+    StubAnno -.-> Out
+
+    classDef ext fill:#fff3e0,stroke:#ef6c00,color:#e65100
+    classDef data fill:#f3e5f5,stroke:#6a1b9a,color:#4a148c
+    classDef hw fill:#e3f2fd,stroke:#1565c0,color:#0d47a1
+    classDef inprogress fill:#fff8e1,stroke:#f9a825,color:#f57f17,stroke-dasharray:5 2 2 2,stroke-width:2px
+    class HW hw
+    class Out data
+    class Predict ext
+    class StubAnno inprogress
+```
+
+**詳細**: → [`MimicRec/README.md`](./MimicRec/README.md)
+
 ### `MimicAnno/` — オフライン subtask アノテーション
 
 ### `CAD_Library/` — ウェアラブルハードウェア

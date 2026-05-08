@@ -238,6 +238,55 @@ flowchart LR
 
 ### `MimicRec/` — local-first data collection web app
 
+**Role**: A web app that collects IL data from a physical robot and outputs LeRobot v3 datasets. Teleop / hand-teach / replay / VLA inference flow through one stack.
+
+**Capabilities**:
+- Teleop (leader arm / keyboard / sim) recording; hand-teach with gravity compensation + gripper friction compensation (reBotArm)
+- Replay with synchronized arm + gripper playback and a safety watchdog (joint position jump / velocity / acceleration triple-gate)
+- Drop in any VLA model on the live robot via a single VLA HTTP contract YAML
+- LeRobot v3 zip download, episode review (success / failure label)
+- Settings UI: device discovery, calibration status, adapter config editing
+- ~250 backend tests, 500 Hz motor control isolated in a separate daemon
+
+**Supported hardware**: SO-101 / reBot Arm B601-DM / Mock / Isaac Sim (Franka verified). New robots only need a single `RobotAdapter` protocol implementation to appear in the UI.
+
+**Internal flow**:
+
+```mermaid
+flowchart LR
+    Op["Operator<br/>(leader / kbd / sim)"]
+    HW["Robot HW<br/>SO-101 / reBotArm / Sim"]
+    subgraph Backend["MimicRec backend"]
+        Adapter["RobotAdapter"]
+        SM["SessionManager<br/>(asyncio control loop)"]
+        Replay["Replay +<br/>safety watchdog"]
+        VLA["VLA HTTP client"]
+        Writer["LeRobot v3 writer"]
+        StubAnno["In-app annotator<br/>(stub)"]
+    end
+    Out[("LeRobot v3<br/>episodes")]
+    Predict["External VLA server<br/>/predict"]
+
+    Op --> SM
+    HW --> Adapter --> SM
+    SM --> Writer --> Out
+    Out --> Replay --> HW
+    SM <--> VLA
+    VLA <--> Predict
+    StubAnno -.-> Out
+
+    classDef ext fill:#fff3e0,stroke:#ef6c00,color:#e65100
+    classDef data fill:#f3e5f5,stroke:#6a1b9a,color:#4a148c
+    classDef hw fill:#e3f2fd,stroke:#1565c0,color:#0d47a1
+    classDef inprogress fill:#fff8e1,stroke:#f9a825,color:#f57f17,stroke-dasharray:5 2 2 2,stroke-width:2px
+    class HW hw
+    class Out data
+    class Predict ext
+    class StubAnno inprogress
+```
+
+**Details**: → [`MimicRec/README.md`](./MimicRec/README.md)
+
 ### `MimicAnno/` — offline subtask annotation
 
 ### `CAD_Library/` — wearable hardware
