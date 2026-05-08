@@ -329,6 +329,16 @@ flowchart LR
 
 ### `CAD_Library/` — ウェアラブルハードウェア
 
+**役割**: ウェアラブル装着の物理一式 (オープン CAD)。 **submodule ではなく root リポジトリ内の通常ディレクトリ**で、 SLDPRT / SLDASM / STEP は git-lfs で管理。
+
+**収録**:
+- `Robot_Arm/reBot_B601_DM_v1.0_20260331.step` — アーム本体 (STEP)
+- `Gripper/gripper.SLDASM` — カスタム軽量グリッパ
+- `Harness/bodey harness.SLDASM` — 体に装着するハーネス
+- `Data_Collection_Device/{ver1,ver2}/` — 胸カメラ + データ収集治具
+
+**閲覧**: SolidWorks があれば直接、 そうでなければ STEP を CAD ビューワーや FreeCAD で開けば寸法は確認できる。
+
 ## Quickstart
 
 ## Safety & Scope

@@ -329,6 +329,16 @@ flowchart LR
 
 ### `CAD_Library/` — wearable hardware
 
+**Role**: All physical components for the wearable, as open CAD. **Not a submodule** — it lives as a regular directory inside this repo, with `SLDPRT` / `SLDASM` / `STEP` files tracked through git-lfs.
+
+**Contents**:
+- `Robot_Arm/reBot_B601_DM_v1.0_20260331.step` — the arm itself (STEP)
+- `Gripper/gripper.SLDASM` — custom lightweight gripper
+- `Harness/bodey harness.SLDASM` — body-mounted harness
+- `Data_Collection_Device/{ver1,ver2}/` — chest camera mount + data-collection rigs
+
+**Viewing**: SolidWorks opens everything natively; without SolidWorks, the STEP file can be inspected with FreeCAD or any standards-compliant CAD viewer.
+
 ## Quickstart
 
 ## Safety & Scope
