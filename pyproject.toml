@@ -15,6 +15,7 @@ dependencies = [
     "bitsandbytes>=0.41.0",
     "av>=14.0.0",
     "pillow>=10.0.0",
+    "omegaconf>=2.3.0",
 ]
 # lerobot and its deps are installed via scripts/setup_env.sh
 # due to transformers version conflict (lerobot requires <5.5, Gemma 4 needs >=5.5)
