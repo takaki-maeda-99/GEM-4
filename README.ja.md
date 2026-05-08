@@ -34,11 +34,30 @@
 
 ## Demo / What it does today
 
+> **状態の注釈**: 以下の実機デモはすべて **operator-supervised の scripted demo** です。 物理 e-stop とソフトウェア watchdog の併用がセッション必須前提。 GIF / 動画はファイルが揃い次第差し替えます。
+
 ### 代表タスク (operator-supervised scripted demo)
+
+- **棚から取る** — <!-- TODO: docs/images/demo_shelf.gif -->
+- **フタを開ける** — <!-- TODO: docs/images/demo_lid.gif -->
+- **支える / 持つ** — 持続的アシスト。 一般的な VLA pick-and-place との差別化点 — <!-- TODO: docs/images/demo_hold.gif -->
 
 ### Sim benchmark
 
+- **LIBERO-Spatial 94 %** — X-VLA-Adapter v33、 47 / 50 episodes、 50 episode/suite、 4 タスク × 50 step
+- 学習曲線: <!-- TODO: docs/images/v33_training_curve.png -->
+
 ### Reproducibility
+
+| Artifact | Pointer |
+|---|---|
+| 学習 config | [`X-VLA-Adapter/configs/train/libero_spatial_v33.yaml`](./X-VLA-Adapter/configs/train/libero_spatial_v33.yaml) |
+| Eval config | [`X-VLA-Adapter/configs/eval/libero_v33_step40000.yaml`](./X-VLA-Adapter/configs/eval/libero_v33_step40000.yaml) |
+| Checkpoint | <!-- TODO: HF Hub または Drive 直リンク --> |
+| Eval コマンド | `uv run python scripts/eval.py configs/eval/libero_v33_step40000.yaml` (`X-VLA-Adapter/` 配下で実行) |
+| ハードウェア / SW | RTX 6000 Ada / Ubuntu 22.04 / CUDA 12.6 / Python 3.12 / `uv` lockfile committed |
+| 正規化統計 | checkpoint と同梱 (`norm_stats.json`) |
+| Model card | <!-- TODO: 限界・既知の挙動を含む model card へのリンク --> |
 
 ## System overview
 

@@ -34,11 +34,30 @@ We believe this is the moment to attempt it. Gemma 4's open-weight, small-footpr
 
 ## Demo / What it does today
 
+> **Status note**: All real-robot demos shown are **operator-supervised scripted demos**. A physical e-stop and software watchdog are required for any session. GIFs / video links will be filled in as media becomes available.
+
 ### Representative tasks (operator-supervised scripted demo)
+
+- **Take from shelf** — <!-- TODO: docs/images/demo_shelf.gif -->
+- **Open lid** — <!-- TODO: docs/images/demo_lid.gif -->
+- **Hold / support** — sustained assistance, our differentiator vs. typical VLA pick-and-place — <!-- TODO: docs/images/demo_hold.gif -->
 
 ### Sim benchmark
 
+- **LIBERO-Spatial 94 %** — X-VLA-Adapter v33, 47 / 50 episodes, 50 episode/suite, 4 tasks × 50 steps
+- Training curve: <!-- TODO: docs/images/v33_training_curve.png -->
+
 ### Reproducibility
+
+| Artifact | Pointer |
+|---|---|
+| Train config | [`X-VLA-Adapter/configs/train/libero_spatial_v33.yaml`](./X-VLA-Adapter/configs/train/libero_spatial_v33.yaml) |
+| Eval config | [`X-VLA-Adapter/configs/eval/libero_v33_step40000.yaml`](./X-VLA-Adapter/configs/eval/libero_v33_step40000.yaml) |
+| Checkpoint | <!-- TODO: HF Hub or Drive direct link --> |
+| Eval command | `uv run python scripts/eval.py configs/eval/libero_v33_step40000.yaml` (run from `X-VLA-Adapter/`) |
+| Hardware / SW | RTX 6000 Ada / Ubuntu 22.04 / CUDA 12.6 / Python 3.12 / `uv` lockfile committed |
+| Normalization stats | Distributed alongside the checkpoint (`norm_stats.json`) |
+| Model card | <!-- TODO: link to model card with limitations section --> |
 
 ## System overview
 
