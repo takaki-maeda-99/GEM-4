@@ -7,3 +7,9 @@
 [submodule "MimicAnno"]
 	path = MimicAnno
 	url = git@github.com:takaki-maeda-99/MimicAnno.git
+[submodule "raspi_for_vla"]
+	path = raspi_for_vla
+	url = git@github.com:gayagayataiga/raspi_for_vla.git
+[submodule "whisper_hackathon"]
+	path = whisper_hackathon
+	url = git@github.com:gayagayataiga/whisper_hackathon.git
