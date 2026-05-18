@@ -35,8 +35,8 @@ For this project, VLA is the bridge from a user's instruction and camera images 
 
 ## Capabilities
 
-- **A VLA policy can be trained and evaluated**: X-VLA-Adapter v33 reaches **94%** on LIBERO-Spatial, 47 / 50 episodes. The setup freezes Gemma 4 and trains the smaller modules that connect vision, language, and action, making fast iteration possible within the hackathon window.
-- **The VLA stack is built to expand across domains**: X-VLA-Adapter is designed around multi-domain RLDS / LeRobot data, not a single benchmark-only path. Cross-embodiment / multi-domain X-VLA is part of the supported scope, making this the foundation for scaling to more robots and tasks.
+- **A VLA policy can be trained and evaluated**: GEM-4-VLA v33 reaches **94%** on LIBERO-Spatial, 47 / 50 episodes. The setup freezes Gemma 4 and trains the smaller modules that connect vision, language, and action, making fast iteration possible within the hackathon window.
+- **The VLA stack is built to expand across domains**: GEM-4-VLA is designed around multi-domain RLDS / LeRobot data, not a single benchmark-only path. Cross-embodiment / multi-domain X-VLA is part of the supported scope, making this the foundation for scaling to more robots and tasks.
 - **Inference runs offline on Jetson**: the inference path can run on-device, without relying on a network connection. Camera and voice data can stay local, and decisions happen close to the body with lower latency.
 - **There are real-robot demonstrations**: operator-supervised scripted demos cover take from shelf, open lid, and hold / support. The hold / support task is especially important because it points beyond one-shot pick-and-place toward sustained physical assistance.
 - **MimicRec makes VLA data collection practical**: teleop, hand-teach, replay, review, LeRobot v3 export, and VLA `/predict` integration are brought into one local-first web app. It supports the loop of collecting demonstrations, inspecting them, checking success / failure, and connecting a VLA model for evaluation across real, mock, and sim setups.
@@ -56,9 +56,9 @@ All real-robot sessions require an operator, physical E-stop, and software watch
 
 | Artifact | Pointer |
 |---|---|
-| Train config | [`X-VLA-Adapter/configs/train/libero_spatial_v33.yaml`](./X-VLA-Adapter/configs/train/libero_spatial_v33.yaml) |
-| Eval config | [`X-VLA-Adapter/configs/eval/libero_v33_step40000.yaml`](./X-VLA-Adapter/configs/eval/libero_v33_step40000.yaml) |
-| Eval command | `uv run python scripts/eval.py configs/eval/libero_v33_step40000.yaml` from `X-VLA-Adapter/` |
+| Train config | [`GEM-4-VLA/configs/train/libero_spatial_v33.yaml`](./GEM-4-VLA/configs/train/libero_spatial_v33.yaml) |
+| Eval config | [`GEM-4-VLA/configs/eval/libero_v33_step40000.yaml`](./GEM-4-VLA/configs/eval/libero_v33_step40000.yaml) |
+| Eval command | `uv run python scripts/eval.py configs/eval/libero_v33_step40000.yaml` from `GEM-4-VLA/` |
 | Hardware / SW | RTX 6000 Ada / Ubuntu 22.04 / CUDA 12.6 / Python 3.12 / `uv` lockfile |
 | Checkpoint | <!-- TODO: HF Hub or Drive direct link --> |
 | Normalization stats | Distributed alongside the checkpoint as `norm_stats.json` |
@@ -72,7 +72,7 @@ flowchart LR
     HW["Wearable hardware<br/>1-arm reBot B601-DM<br/>chest + wrist cameras"]
     Rec["MimicRec<br/>collect / replay / inference client"]
     Anno["MimicAnno<br/>offline subtask annotation"]
-    Train["X-VLA-Adapter<br/>Gemma 4 E2B + VLA-Adapter training"]
+    Train["GEM-4-VLA<br/>Gemma 4 E2B + VLA-Adapter training"]
     Infer["Phase 0 inference server<br/>/predict"]
     Data[("LeRobot v3 episodes<br/>+ subtask_index")]
     Ckpt[("checkpoint<br/>+ norm stats")]
@@ -94,7 +94,7 @@ Gemma 4 is used in two places:
 
 | Where | Role |
 |---|---|
-| `X-VLA-Adapter` | Main robot policy. It connects camera features, user instructions, and action outputs while keeping the Gemma 4 LLM frozen. |
+| `GEM-4-VLA` | Main robot policy. It connects camera features, user instructions, and action outputs while keeping the Gemma 4 LLM frozen. |
 | `MimicAnno` Phase 2 | Offline image-text-to-text VLM labeling for subtask phases. |
 
 On-device offline inference on Jetson is supported, so the runtime path can avoid cloud dependency.
@@ -111,7 +111,7 @@ On-device offline inference on Jetson is supported, so the runtime path can avoi
 
 | Path | Role | Details |
 |---|---|---|
-| [`X-VLA-Adapter/`](./X-VLA-Adapter/README.md) | Robot policy model, training, evaluation, and inference server. Headline result: LIBERO-Spatial v33 = 94%. | [`README`](./X-VLA-Adapter/README.md) |
+| [`GEM-4-VLA/`](./GEM-4-VLA/README.md) | Robot policy model, training, evaluation, and inference server. Headline result: LIBERO-Spatial v33 = 94%. | [`README`](./GEM-4-VLA/README.md) |
 | [`MimicRec/`](./MimicRec/README.md) | Local-first web app for teleop, hand-teach, replay, review, and LeRobot v3 dataset export. | [`README`](./MimicRec/README.md) |
 | [`MimicAnno/`](./MimicAnno/README.md) | Offline pipeline for subtask boundary detection, Gemma 4 VLM labeling, SAM3 tracking, Viterbi smoothing, and export. | [`README`](./MimicAnno/README.md) |
 | `CAD_Library/` | Wearable hardware CAD: arm, gripper, harness, and camera / data-collection fixtures. | SolidWorks / STEP files via git-lfs |
@@ -128,13 +128,13 @@ Then choose the relevant entry point:
 
 | Goal | Start here |
 |---|---|
-| Train / evaluate on LIBERO | [`X-VLA-Adapter/README.md`](./X-VLA-Adapter/README.md) |
+| Train / evaluate on LIBERO | [`GEM-4-VLA/README.md`](./GEM-4-VLA/README.md) |
 | Collect or replay robot data | [`MimicRec/README.md`](./MimicRec/README.md) |
 | Annotate an existing dataset | [`MimicAnno/README.md`](./MimicAnno/README.md) |
 
 There is no root-level end-to-end command yet. Each submodule README is the source of truth for its own runtime.
 
-**Prerequisites**: Ubuntu 22.04 / 24.04, Python 3.12, Node 20+ for the MimicRec frontend, NVIDIA GPU + CUDA 12.6+ for X-VLA-Adapter training. macOS / WSL may work for some components but is unverified.
+**Prerequisites**: Ubuntu 22.04 / 24.04, Python 3.12, Node 20+ for the MimicRec frontend, NVIDIA GPU + CUDA 12.6+ for GEM-4-VLA training. macOS / WSL may work for some components but is unverified.
 
 ## Safety & Scope
 
@@ -149,7 +149,7 @@ There is no root-level end-to-end command yet. Each submodule README is the sour
 
 **Shipped**
 
-- LIBERO-Spatial 94% with X-VLA-Adapter v33.
+- LIBERO-Spatial 94% with GEM-4-VLA v33.
 - Operator-supervised scripted demos for take from shelf, open lid, and hold / support.
 - MimicRec collect / review / replay flow on SO-101, reBot Arm, and Isaac Sim.
 - MimicAnno Phase 1-4 annotation pipeline.
@@ -159,8 +159,8 @@ There is no root-level end-to-end command yet. Each submodule README is the sour
 
 **Covered in this repo**
 
-- Checkpoint-backed real model prediction is handled in the X-VLA-Adapter inference path.
-- Cross-embodiment / multi-domain X-VLA is handled as part of the X-VLA-Adapter training and evaluation scope.
+- Checkpoint-backed real model prediction is handled in the GEM-4-VLA inference path.
+- Cross-embodiment / multi-domain X-VLA is handled as part of the GEM-4-VLA training and evaluation scope.
 - MimicAnno Phase 5 autonomous labeling and edit UI are handled as part of the MimicAnno expansion scope.
 
 **Roadmap, not implemented**
@@ -181,6 +181,6 @@ The next goal is not merely to make a robot arm move. It is to make assistance f
 ## License
 
 - Root repository: **Apache-2.0** (see [`LICENSE`](./LICENSE))
-- Submodules (`MimicRec`, `MimicAnno`, `X-VLA-Adapter`): **Apache-2.0**
+- Submodules (`MimicRec`, `MimicAnno`, `GEM-4-VLA`): **Apache-2.0**
 - `CAD_Library/` SLDPRT / SLDASM / STEP files: governed by the root license
 - Upstream libraries retain their own licenses

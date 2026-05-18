@@ -1,9 +1,9 @@
 [submodule "MimicRec"]
 	path = MimicRec
 	url = git@github.com:takaki-maeda-99/MimicRec.git
-[submodule "X-VLA-Adapter"]
-	path = X-VLA-Adapter
-	url = git@github.com:takaki-maeda-99/X-VLA-Adapter.git
+[submodule "GEM-4-VLA"]
+	path = GEM-4-VLA
+	url = git@github.com:takaki-maeda-99/GEM-4-VLA.git
 [submodule "MimicAnno"]
 	path = MimicAnno
 	url = git@github.com:takaki-maeda-99/MimicAnno.git

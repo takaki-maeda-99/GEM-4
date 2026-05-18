@@ -36,8 +36,8 @@
 
 ## できること
 
-- **VLA policy が実際に学習・評価できる**: X-VLA-Adapter v33 で LIBERO-Spatial **94%**、47 / 50 episodes。Gemma 4 を凍結し、vision / language / action をつなぐ小さなモジュールを学習する構成で、短期間でも実験を回せることを示しました。
-- **マルチドメインへ広げる土台がある**: X-VLA-Adapter は LIBERO だけでなく、複数ドメインの RLDS / LeRobot データを扱う前提で設計されています。cross-embodiment / multi-domain X-VLA も対応スコープに含めており、今後ロボット形態やタスクを増やしていくための中核になります。
+- **VLA policy が実際に学習・評価できる**: GEM-4-VLA v33 で LIBERO-Spatial **94%**、47 / 50 episodes。Gemma 4 を凍結し、vision / language / action をつなぐ小さなモジュールを学習する構成で、短期間でも実験を回せることを示しました。
+- **マルチドメインへ広げる土台がある**: GEM-4-VLA は LIBERO だけでなく、複数ドメインの RLDS / LeRobot データを扱う前提で設計されています。cross-embodiment / multi-domain X-VLA も対応スコープに含めており、今後ロボット形態やタスクを増やしていくための中核になります。
 - **Jetson でオフライン推論できる**: 推論を Jetson 上に載せ、ネットワークに依存しない on-device 実行ができます。カメラ・音声データを外へ送らず、身体の近くで低遅延に判断する支援システムへ近づいています。
 - **実機で見せられるタスクがある**: 棚から取る、フタを開ける、支える / 持つ、の 3 タスクを operator-supervised scripted demo として実施。特に「支える / 持つ」は、単発の pick-and-place だけでなく、身体支援らしい持続的な介助へ向かうデモです。
 - **MimicRec が VLA の入口を作る**: teleop、hand-teach、replay、review、LeRobot v3 export、VLA `/predict` 接続を 1 つの local-first Web アプリにまとめています。データを集める、見返す、失敗 / 成功を確認する、VLA に接続して評価する、という流れを実機・mock・sim で扱えます。
@@ -57,9 +57,9 @@
 
 | Artifact | Pointer |
 |---|---|
-| 学習 config | [`X-VLA-Adapter/configs/train/libero_spatial_v33.yaml`](./X-VLA-Adapter/configs/train/libero_spatial_v33.yaml) |
-| Eval config | [`X-VLA-Adapter/configs/eval/libero_v33_step40000.yaml`](./X-VLA-Adapter/configs/eval/libero_v33_step40000.yaml) |
-| Eval コマンド | `uv run python scripts/eval.py configs/eval/libero_v33_step40000.yaml` を `X-VLA-Adapter/` で実行 |
+| 学習 config | [`GEM-4-VLA/configs/train/libero_spatial_v33.yaml`](./GEM-4-VLA/configs/train/libero_spatial_v33.yaml) |
+| Eval config | [`GEM-4-VLA/configs/eval/libero_v33_step40000.yaml`](./GEM-4-VLA/configs/eval/libero_v33_step40000.yaml) |
+| Eval コマンド | `uv run python scripts/eval.py configs/eval/libero_v33_step40000.yaml` を `GEM-4-VLA/` で実行 |
 | Hardware / SW | RTX 6000 Ada / Ubuntu 22.04 / CUDA 12.6 / Python 3.12 / `uv` lockfile |
 | Checkpoint | <!-- TODO: HF Hub または Drive 直リンク --> |
 | 正規化統計 | checkpoint と同梱の `norm_stats.json` |
@@ -73,7 +73,7 @@ flowchart LR
     HW["Wearable hardware<br/>1-arm reBot B601-DM<br/>chest + wrist cameras"]
     Rec["MimicRec<br/>collect / replay / inference client"]
     Anno["MimicAnno<br/>offline subtask annotation"]
-    Train["X-VLA-Adapter<br/>Gemma 4 E2B + VLA-Adapter training"]
+    Train["GEM-4-VLA<br/>Gemma 4 E2B + VLA-Adapter training"]
     Infer["Phase 0 inference server<br/>/predict"]
     Data[("LeRobot v3 episodes<br/>+ subtask_index")]
     Ckpt[("checkpoint<br/>+ norm stats")]
@@ -95,7 +95,7 @@ Gemma 4 は主に 2 箇所で使っています。
 
 | Where | Role |
 |---|---|
-| `X-VLA-Adapter` | ロボット方策の本体。Gemma 4 の LLM 本体は凍結しつつ、カメラ特徴、ユーザー指示、動作出力を接続します。 |
+| `GEM-4-VLA` | ロボット方策の本体。Gemma 4 の LLM 本体は凍結しつつ、カメラ特徴、ユーザー指示、動作出力を接続します。 |
 | `MimicAnno` Phase 2 | オフラインの image-text-to-text VLM として、segment ごとの subtask phase をラベリングします。 |
 
 Jetson 上での on-device offline 推論に対応しており、クラウドに依存しない実行を前提にできます。
@@ -112,7 +112,7 @@ Jetson 上での on-device offline 推論に対応しており、クラウドに
 
 | Path | Role | Details |
 |---|---|---|
-| [`X-VLA-Adapter/`](./X-VLA-Adapter/README.md) | ロボット方策モデル、学習、評価、推論サーバ。代表結果は LIBERO-Spatial v33 = 94%。 | [`README`](./X-VLA-Adapter/README.md) |
+| [`GEM-4-VLA/`](./GEM-4-VLA/README.md) | ロボット方策モデル、学習、評価、推論サーバ。代表結果は LIBERO-Spatial v33 = 94%。 | [`README`](./GEM-4-VLA/README.md) |
 | [`MimicRec/`](./MimicRec/README.md) | teleop、hand-teach、replay、review、LeRobot v3 dataset export を行う local-first Web アプリ。 | [`README`](./MimicRec/README.md) |
 | [`MimicAnno/`](./MimicAnno/README.md) | subtask boundary 検出、Gemma 4 VLM labeling、SAM3 tracking、Viterbi smoothing、export のオフラインパイプライン。 | [`README`](./MimicAnno/README.md) |
 | `CAD_Library/` | アーム、グリッパ、ハーネス、カメラ / データ収集治具などのウェアラブル hardware CAD。 | SolidWorks / STEP files via git-lfs |
@@ -129,13 +129,13 @@ git lfs install && git lfs pull            # CAD_Library の STEP / SLDASM を�
 
 | やりたいこと | 入口 |
 |---|---|
-| LIBERO で学習 / 評価する | [`X-VLA-Adapter/README.md`](./X-VLA-Adapter/README.md) |
+| LIBERO で学習 / 評価する | [`GEM-4-VLA/README.md`](./GEM-4-VLA/README.md) |
 | ロボットデータを収集 / replay する | [`MimicRec/README.md`](./MimicRec/README.md) |
 | 既存 dataset にアノテーションする | [`MimicAnno/README.md`](./MimicAnno/README.md) |
 
 root から直接実行する end-to-end コマンドはまだありません。各サブモジュール README が、それぞれの runtime の SoT です。
 
-**前提環境**: Ubuntu 22.04 / 24.04、Python 3.12、MimicRec frontend 用の Node 20+、X-VLA-Adapter 学習用の NVIDIA GPU + CUDA 12.6+。macOS / WSL は一部コンポーネントで動く可能性がありますが未検証です。
+**前提環境**: Ubuntu 22.04 / 24.04、Python 3.12、MimicRec frontend 用の Node 20+、GEM-4-VLA 学習用の NVIDIA GPU + CUDA 12.6+。macOS / WSL は一部コンポーネントで動く可能性がありますが未検証です。
 
 ## Safety & Scope
 
@@ -150,7 +150,7 @@ root から直接実行する end-to-end コマンドはまだありません。
 
 **Shipped**
 
-- X-VLA-Adapter v33 で LIBERO-Spatial 94%。
+- GEM-4-VLA v33 で LIBERO-Spatial 94%。
 - 棚から取る、フタを開ける、支える / 持つ、の operator-supervised scripted demo。
 - SO-101、reBot Arm、Isaac Sim での MimicRec collect / review / replay flow。
 - MimicAnno Phase 1-4 annotation pipeline。
@@ -160,8 +160,8 @@ root から直接実行する end-to-end コマンドはまだありません。
 
 **本リポジトリの対応範囲**
 
-- 実モデル predictor の checkpoint 統合は X-VLA-Adapter の推論パスで扱う。
-- Cross-embodiment / multi-domain X-VLA は X-VLA-Adapter の学習・評価スコープとして扱う。
+- 実モデル predictor の checkpoint 統合は GEM-4-VLA の推論パスで扱う。
+- Cross-embodiment / multi-domain X-VLA は GEM-4-VLA の学習・評価スコープとして扱う。
 - MimicAnno Phase 5 の autonomous labeling と edit UI は MimicAnno 側の発展スコープとして扱う。
 
 **Roadmap, not implemented**
@@ -182,6 +182,6 @@ root から直接実行する end-to-end コマンドはまだありません。
 ## License
 
 - root リポジトリ: **Apache-2.0** ([`LICENSE`](./LICENSE) 参照)
-- submodule (`MimicRec`, `MimicAnno`, `X-VLA-Adapter`): **Apache-2.0**
+- submodule (`MimicRec`, `MimicAnno`, `GEM-4-VLA`): **Apache-2.0**
 - `CAD_Library/` 内の SLDPRT / SLDASM / STEP files: root license に従う
 - 上流ライブラリは各々のライセンスに従う
