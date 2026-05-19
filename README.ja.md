@@ -185,3 +185,9 @@ root から直接実行する end-to-end コマンドはまだありません。
 - submodule (`MimicRec`, `MimicAnno`, `GEM-4-VLA`): **Apache-2.0**
 - `CAD_Library/` 内の SLDPRT / SLDASM / STEP files: root license に従う
 - 上流ライブラリは各々のライセンスに従う
+
+### サードパーティ ハードウェア / SDK
+
+- **reBot Arm B601-DM ハードウェア**: [Seeed-Projects/reBot-DevArm](https://github.com/Seeed-Projects/reBot-DevArm) ベース。**CERN-OHL-W-2.0**（CERN Open Hardware Licence Version 2 - Weakly Reciprocal）。機構・回路設計の再配布（`CAD_Library/` 内の派生物を含む）は root の Apache-2.0 に加えて CERN-OHL-W-2.0 にも従う必要があります。
+- **reBotArm Python 制御 SDK**（`MimicRec/reBotArm_control_py/`、`vectorBH6/reBotArm_control_py` のフォーク）: 上流に LICENSE ファイル未設定。当該 submodule のソース再配布・改変は上流との個別調整が必要です。
+- **LeRobot フォーク**（`MimicRec/lerobot/`、[huggingface/lerobot](https://github.com/huggingface/lerobot) のフォーク）: Apache-2.0（Hugging Face）。一部 MIT / Apache-2.0 派生コードを含みます。

@@ -184,3 +184,9 @@ The next goal is not merely to make a robot arm move. It is to make assistance f
 - Submodules (`MimicRec`, `MimicAnno`, `GEM-4-VLA`): **Apache-2.0**
 - `CAD_Library/` SLDPRT / SLDASM / STEP files: governed by the root license
 - Upstream libraries retain their own licenses
+
+### Third-party hardware / SDK
+
+- **reBot Arm B601-DM hardware**: based on [Seeed-Projects/reBot-DevArm](https://github.com/Seeed-Projects/reBot-DevArm), licensed under **CERN-OHL-W-2.0** (CERN Open Hardware Licence Version 2 - Weakly Reciprocal). Any redistribution of the mechanical / electrical design (including derivatives in `CAD_Library/`) must comply with CERN-OHL-W-2.0 in addition to the root Apache-2.0 license that covers the rest of this repository.
+- **reBotArm Python control SDK** (`MimicRec/reBotArm_control_py/`, fork of `vectorBH6/reBotArm_control_py`): no explicit upstream LICENSE file. Redistribution or modification of that submodule's source requires coordinating directly with upstream.
+- **LeRobot fork** (`MimicRec/lerobot/`, fork of [huggingface/lerobot](https://github.com/huggingface/lerobot)): Apache-2.0 (Hugging Face); incorporates MIT- and Apache-2.0-licensed derived code.
