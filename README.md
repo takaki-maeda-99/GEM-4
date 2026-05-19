@@ -11,7 +11,7 @@
 ![Python](https://img.shields.io/badge/Python-3.12-blue)
 ![License](https://img.shields.io/badge/License-Apache--2.0-blue)
 
-![alt text](HEROv1.png)
+![alt text](media/HEROv1.png)
 
 ## Overview
 
@@ -69,6 +69,8 @@ All real-robot sessions require an operator, physical E-stop, and software watch
 ```mermaid
 flowchart LR
     User["User<br/>voice instruction"]
+    Raspi["raspi_for_vla<br/>Raspberry Pi 5 client<br/>mic + camera, wake-word / GPIO"]
+    Whisper["whisper_hackathon<br/>Jetson Whisper server<br/>speech to text"]
     HW["Wearable hardware<br/>1-arm reBot B601-DM<br/>chest + wrist cameras"]
     Rec["MimicRec<br/>collect / replay / inference client"]
     Anno["MimicAnno<br/>offline subtask annotation"]
@@ -77,7 +79,10 @@ flowchart LR
     Data[("LeRobot v3 episodes<br/>+ subtask_index")]
     Ckpt[("checkpoint<br/>+ norm stats")]
 
-    User --> Infer
+    User -->|speech| Raspi
+    Raspi -->|audio| Whisper
+    Whisper -->|text| Raspi
+    Raspi -->|instruction| Infer
     User --> Rec
     HW <--> Rec
     Rec --> Data
@@ -114,6 +119,8 @@ On-device offline inference on Jetson is supported, so the runtime path can avoi
 | [`GEM-4-VLA/`](./GEM-4-VLA/README.md) | Robot policy model, training, evaluation, and inference server. Headline result: LIBERO-Spatial v33 = 94%. | [`README`](./GEM-4-VLA/README.md) |
 | [`MimicRec/`](./MimicRec/README.md) | Local-first web app for teleop, hand-teach, replay, review, and LeRobot v3 dataset export. | [`README`](./MimicRec/README.md) |
 | [`MimicAnno/`](./MimicAnno/README.md) | Offline pipeline for subtask boundary detection, Gemma 4 VLM labeling, SAM3 tracking, Viterbi smoothing, and export. | [`README`](./MimicAnno/README.md) |
+| [`raspi_for_vla/`](./raspi_for_vla/README.md) | Raspberry Pi 5 client: USB camera / mic capture, GPIO or wake-word triggered recording, sends observations to Jetson and receives transcripts. | [`README`](./raspi_for_vla/README.md) |
+| [`whisper_hackathon/`](./whisper_hackathon/README.md) | Jetson AGX Orin Whisper transcription pipeline (`faster-whisper`); receives audio from the Raspi and returns text to drive the VLA instruction. | [`README`](./whisper_hackathon/README.md) |
 | `CAD_Library/` | Wearable hardware CAD: arm, gripper, harness, and camera / data-collection fixtures. | SolidWorks / STEP files via git-lfs |
 
 ## Quickstart
@@ -182,6 +189,8 @@ The next goal is not merely to make a robot arm move. It is to make assistance f
 
 - Root repository: **Apache-2.0** (see [`LICENSE`](./LICENSE))
 - Submodules (`MimicRec`, `MimicAnno`, `GEM-4-VLA`): **Apache-2.0**
+- Submodule `whisper_hackathon`: **MIT**
+- Submodule `raspi_for_vla`: no upstream LICENSE file at the time of writing; redistribution / modification requires coordinating with the upstream author.
 - `CAD_Library/` SLDPRT / SLDASM / STEP files: governed by the root license
 - Upstream libraries retain their own licenses
 

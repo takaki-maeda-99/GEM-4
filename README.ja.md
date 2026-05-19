@@ -12,7 +12,7 @@
 ![License](https://img.shields.io/badge/License-Apache--2.0-blue)
 
 <!-- TODO: docs/images/hero.gif - 装着デモのヒーロー -->
-![alt text](HEROv1.png)
+![alt text](media/HEROv1.png)
 
 ## 概要
 
@@ -70,6 +70,8 @@
 ```mermaid
 flowchart LR
     User["User<br/>voice instruction"]
+    Raspi["raspi_for_vla<br/>Raspberry Pi 5 client<br/>mic + camera, wake-word / GPIO"]
+    Whisper["whisper_hackathon<br/>Jetson Whisper server<br/>speech to text"]
     HW["Wearable hardware<br/>1-arm reBot B601-DM<br/>chest + wrist cameras"]
     Rec["MimicRec<br/>collect / replay / inference client"]
     Anno["MimicAnno<br/>offline subtask annotation"]
@@ -78,7 +80,10 @@ flowchart LR
     Data[("LeRobot v3 episodes<br/>+ subtask_index")]
     Ckpt[("checkpoint<br/>+ norm stats")]
 
-    User --> Infer
+    User -->|speech| Raspi
+    Raspi -->|audio| Whisper
+    Whisper -->|text| Raspi
+    Raspi -->|instruction| Infer
     User --> Rec
     HW <--> Rec
     Rec --> Data
@@ -115,6 +120,8 @@ Jetson 上での on-device offline 推論に対応しており、クラウドに
 | [`GEM-4-VLA/`](./GEM-4-VLA/README.md) | ロボット方策モデル、学習、評価、推論サーバ。代表結果は LIBERO-Spatial v33 = 94%。 | [`README`](./GEM-4-VLA/README.md) |
 | [`MimicRec/`](./MimicRec/README.md) | teleop、hand-teach、replay、review、LeRobot v3 dataset export を行う local-first Web アプリ。 | [`README`](./MimicRec/README.md) |
 | [`MimicAnno/`](./MimicAnno/README.md) | subtask boundary 検出、Gemma 4 VLM labeling、SAM3 tracking、Viterbi smoothing、export のオフラインパイプライン。 | [`README`](./MimicAnno/README.md) |
+| [`raspi_for_vla/`](./raspi_for_vla/README.md) | Raspberry Pi 5 側クライアント。USB カメラ・マイクで観測を取得し、GPIO スイッチまたはウェイクワードをトリガに Jetson へ送信、文字起こし結果を受信する。 | [`README`](./raspi_for_vla/README.md) |
+| [`whisper_hackathon/`](./whisper_hackathon/README.md) | Jetson AGX Orin 上の Whisper 文字起こしパイプライン（`faster-whisper`）。Raspi から受け取った音声をテキスト化し、VLA 指示として返す。 | [`README`](./whisper_hackathon/README.md) |
 | `CAD_Library/` | アーム、グリッパ、ハーネス、カメラ / データ収集治具などのウェアラブル hardware CAD。 | SolidWorks / STEP files via git-lfs |
 
 ## Quickstart
@@ -183,6 +190,8 @@ root から直接実行する end-to-end コマンドはまだありません。
 
 - root リポジトリ: **Apache-2.0** ([`LICENSE`](./LICENSE) 参照)
 - submodule (`MimicRec`, `MimicAnno`, `GEM-4-VLA`): **Apache-2.0**
+- submodule `whisper_hackathon`: **MIT**
+- submodule `raspi_for_vla`: 上流に LICENSE ファイル未設定。再配布・改変は上流著者との個別調整が必要です。
 - `CAD_Library/` 内の SLDPRT / SLDASM / STEP files: root license に従う
 - 上流ライブラリは各々のライセンスに従う
 
