@@ -4,9 +4,9 @@
 
 > A Gemma 4-based wearable Vision-Language-Action assistant: a hands-free companion arm prototype that sees, understands voice instructions, and moves to help people with limb or visual impairments.
 
-[![Hackathon](https://img.shields.io/badge/Hackathon-Gemma%204%20Good-orange)](https://www.kaggle.com/competitions/gemma-4-good-hackathon/)
 [![Backbone](https://img.shields.io/badge/Backbone-Gemma%204%20E2B-blue)](https://www.kaggle.com/models/google/gemma-4)
-![Sim benchmark](https://img.shields.io/badge/LIBERO--Spatial-94%25-brightgreen)
+[![Pretrain](https://img.shields.io/badge/Pretrain-OXE%20%2B%20LIBERO%204--suite-blue)](https://huggingface.co/takaki99/GEM-4-Pretrained-OXE)
+![LIBERO 4-suite avg](https://img.shields.io/badge/LIBERO%204--suite%20avg-74%25-brightgreen)
 ![Status](https://img.shields.io/badge/Status-research%20prototype-yellow)
 ![Python](https://img.shields.io/badge/Python-3.12-blue)
 ![License](https://img.shields.io/badge/License-Apache--2.0-blue)
@@ -19,7 +19,7 @@ A cup is just out of reach. A lid needs two hands. An object needs to be held st
 
 We explore that idea as a wearable one-arm robot with a chest camera, a wrist camera, and natural-language voice instructions. The user says "take it," "open it," or "hold this." The system reads the intent, looks at the scene, and turns the request into a short physical action. The goal is **semi-autonomous assistance**: not a fully autonomous robot, but something closer to an extension of the user's own body and intent.
 
-The technical bet is Gemma 4 + VLA-Adapter. In plain terms, this means connecting a language model to camera observations and robot actions without retraining the whole language model. That efficiency mattered: within a short hackathon sprint, we could iterate, recover from failed experiments, and reach **LIBERO-Spatial 94%** in simulation. The inference stack also runs on Jetson, making offline on-device use possible without depending on the cloud.
+The technical bet is **SigLIP + Gemma 4-E2B + per-domain projectors + L1 action head**, connected through an action-generation adapter that cross-attends over each Gemma 4 layer. The Gemma 4 backbone stays frozen and only the smaller modules around it are trained, so we can iterate quickly and recover from failed experiments. A single base model is pretrained on **Open-X-Embodiment + LIBERO at ~8 : 2** and then fine-tuned per task / suite, reaching **LIBERO 4-suite average 74 %** in simulation (spatial 72 %, object 92 %, goal 89 %, long 43 % — 10 episodes per task × 10 tasks). The inference stack also runs on Jetson, so on-device use is possible without depending on the cloud.
 
 This is a research prototype with operator-supervised demos. It is **not** a medical device or certified assistive device.
 
@@ -35,34 +35,32 @@ For this project, VLA is the bridge from a user's instruction and camera images 
 
 ## Capabilities
 
-- **A VLA policy can be trained and evaluated**: GEM-4-VLA v33 reaches **94%** on LIBERO-Spatial, 47 / 50 episodes. The setup freezes Gemma 4 and trains the smaller modules that connect vision, language, and action, making fast iteration possible within the hackathon window.
-- **The VLA stack is built to expand across domains**: GEM-4-VLA is designed around multi-domain RLDS / LeRobot data, not a single benchmark-only path. Cross-embodiment / multi-domain X-VLA is part of the supported scope, making this the foundation for scaling to more robots and tasks.
-- **Inference runs offline on Jetson**: the inference path can run on-device, without relying on a network connection. Camera and voice data can stay local, and decisions happen close to the body with lower latency.
+- **A VLA policy can be trained and evaluated end-to-end**: a single base ([`takaki99/GEM-4-Pretrained-OXE`](https://huggingface.co/takaki99/GEM-4-Pretrained-OXE)) is pretrained on **OXE + LIBERO (~8 : 2)** and then fine-tuned per LIBERO suite. With Gemma 4 frozen, the small projector / action-head modules are what get trained, and on FT step 50 k the **LIBERO 4-suite average is 74 %** (spatial 72 %, object 92 %, goal 89 %, long 43 % — 100 episodes per suite). Object and Goal in particular show that the policy can convert Gemma 4's language / vision understanding into successful actions.
+- **The VLA stack is built to expand across domains**: GEM-4-VLA is designed around multi-domain RLDS / LeRobot data with per-domain input / output projectors, not a single benchmark-only path. Cross-embodiment / multi-domain transfer is part of the supported scope, making this the foundation for scaling to more robots and tasks.
+- **Voice in, robot action out, on-device**: the `raspi_for_vla` client picks up a "hey GEM"-triggered voice instruction, ships the audio to `whisper_hackathon` on Jetson for transcription, and the resulting text is fed to the VLA `/predict` server alongside the chest / wrist camera frames. Cameras, mic audio, transcription, and policy inference can all stay on-device — no cloud round-trip required.
 - **There are real-robot demonstrations**: operator-supervised scripted demos cover take from shelf, open lid, and hold / support. The hold / support task is especially important because it points beyond one-shot pick-and-place toward sustained physical assistance.
-- **MimicRec makes VLA data collection practical**: teleop, hand-teach, replay, review, LeRobot v3 export, and VLA `/predict` integration are brought into one local-first web app. It supports the loop of collecting demonstrations, inspecting them, checking success / failure, and connecting a VLA model for evaluation across real, mock, and sim setups.
-- **MimicAnno turns raw episodes into richer training data**: it adds subtask boundaries and labels so trajectories are no longer just motion logs; they become structured demonstrations of what phase of the task is happening. That is the substrate for future hierarchical inference and longer-horizon task learning.
+- **MimicRec makes VLA data collection practical**: teleop, hand-teach, replay, review, LeRobot v3 export, and VLA `/predict` integration are brought into one local-first web app. By abstracting the robot interface, the same flow runs across real reBot Arm, SO-101, Isaac Sim, and mock setups — just add a per-robot control adapter. Demo site: <https://takaki-maeda-99.github.io/MimicRec/>.
+- **MimicAnno turns raw episodes into richer training data**: subtask boundaries are detected from gripper open / close events plus EEF velocity / acceleration / action-norm changes, then each segment is tracked with SAM3 and labeled by an Unsloth-QLoRA-tuned Gemma 4 (verb / object / target / confidence). A second pipeline reconstructs EEF position, orientation, and pinch distance from a first-person GoPro video using MediaPipe hand landmarks + UniDAC metric depth — a path toward training data generated from human demonstrations alone.
 - **The hardware is part of the release**: the wearable arm prototype and CAD files live under `CAD_Library/`. This is not only a model repo; it is an end-to-end prototype covering the wearable setup, camera placement, data collection, annotation, training, and evaluation path.
 
 All real-robot sessions require an operator, physical E-stop, and software watchdog.
 
-<!-- TODO: add demo GIFs / videos:
-- docs/images/demo_shelf.gif
-- docs/images/demo_lid.gif
-- docs/images/demo_hold.gif
-- docs/images/v33_training_curve.png
--->
+<!-- TODO: add demo GIFs / videos under media/ -->
+
 
 ## Reproducibility
 
 | Artifact | Pointer |
 |---|---|
-| Train config | [`GEM-4-VLA/configs/train/libero_spatial_v33.yaml`](./GEM-4-VLA/configs/train/libero_spatial_v33.yaml) |
-| Eval config | [`GEM-4-VLA/configs/eval/libero_v33_step40000.yaml`](./GEM-4-VLA/configs/eval/libero_v33_step40000.yaml) |
-| Eval command | `uv run python scripts/eval.py configs/eval/libero_v33_step40000.yaml` from `GEM-4-VLA/` |
+| Pretrain base | [`takaki99/GEM-4-Pretrained-OXE`](https://huggingface.co/takaki99/GEM-4-Pretrained-OXE) — OXE 9 datasets + LIBERO 4-suite mix, `step_100000` |
+| FT checkpoints | [`GEM-4-FT-libero-spatial`](https://huggingface.co/takaki99/GEM-4-FT-libero-spatial), [`-object`](https://huggingface.co/takaki99/GEM-4-FT-libero-object), [`-goal`](https://huggingface.co/takaki99/GEM-4-FT-libero-goal), [`-10`](https://huggingface.co/takaki99/GEM-4-FT-libero-10) |
+| Train config (spatial example) | [`GEM-4-VLA/configs/train/libero_spatial_v47_step100k_ft_dl41_2gpu.yaml`](./GEM-4-VLA/configs/train/libero_spatial_v47_step100k_ft_dl41_2gpu.yaml) |
+| Eval config (spatial step 50k) | [`GEM-4-VLA/configs/eval/libero_spatial_v47_step100k_ft_dl41_2gpu_step50000.yaml`](./GEM-4-VLA/configs/eval/libero_spatial_v47_step100k_ft_dl41_2gpu_step50000.yaml) |
+| Eval command | `uv run python scripts/eval.py configs/eval/libero_spatial_v47_step100k_ft_dl41_2gpu_step50000.yaml` from `GEM-4-VLA/` |
+| Eval protocol | 10 episodes / task × 10 tasks = **100 episodes per suite**, headless MuJoCo |
+| FT recipe | `bs=8 × 2 GPU × accum=2 = eff bs 32` (spatial / object / goal); `bs=8 × 4 GPU × accum=4 = eff bs 128` (libero_10) |
 | Hardware / SW | RTX 6000 Ada / Ubuntu 22.04 / CUDA 12.6 / Python 3.12 / `uv` lockfile |
-| Checkpoint | <!-- TODO: HF Hub or Drive direct link --> |
-| Normalization stats | Distributed alongside the checkpoint as `norm_stats.json` |
-| Model card | <!-- TODO: link to model card with limitations section --> |
+| Normalization stats | Distributed alongside each checkpoint as `norm_stats.json` |
 
 ## System
 
@@ -74,8 +72,8 @@ flowchart LR
     HW["Wearable hardware<br/>1-arm reBot B601-DM<br/>chest + wrist cameras"]
     Rec["MimicRec<br/>collect / replay / inference client"]
     Anno["MimicAnno<br/>offline subtask annotation"]
-    Train["GEM-4-VLA<br/>Gemma 4 E2B + VLA-Adapter training"]
-    Infer["Phase 0 inference server<br/>/predict"]
+    Train["GEM-4-VLA<br/>SigLIP + Gemma 4 E2B<br/>per-domain projectors + L1 head"]
+    Infer["GEM-4-VLA inference server<br/>scripts/serve.py /predict"]
     Data[("LeRobot v3 episodes<br/>+ subtask_index")]
     Ckpt[("checkpoint<br/>+ norm stats")]
 
@@ -99,8 +97,8 @@ Gemma 4 is used in two places:
 
 | Where | Role |
 |---|---|
-| `GEM-4-VLA` | Main robot policy. It connects camera features, user instructions, and action outputs while keeping the Gemma 4 LLM frozen. |
-| `MimicAnno` Phase 2 | Offline image-text-to-text VLM labeling for subtask phases. |
+| `GEM-4-VLA` | Main robot policy. Action-generation adapter cross-attends over each Gemma 4 layer; the LLM stays frozen and only the projectors + action head are trained. |
+| `MimicAnno` subtask labeler | Offline image-text-to-text VLM labeling for subtask phases, QLoRA-finetuned with Unsloth on top of Gemma 4. |
 
 On-device offline inference on Jetson is supported, so the runtime path can avoid cloud dependency.
 
@@ -116,7 +114,7 @@ On-device offline inference on Jetson is supported, so the runtime path can avoi
 
 | Path | Role | Details |
 |---|---|---|
-| [`GEM-4-VLA/`](./GEM-4-VLA/README.md) | Robot policy model, training, evaluation, and inference server. Headline result: LIBERO-Spatial v33 = 94%. | [`README`](./GEM-4-VLA/README.md) |
+| [`GEM-4-VLA/`](./GEM-4-VLA/README.md) | Robot policy model, training, evaluation, and `POST /predict` inference server. Headline result: LIBERO 4-suite avg 74 % (FT step 50 k). | [`README`](./GEM-4-VLA/README.md) |
 | [`MimicRec/`](./MimicRec/README.md) | Local-first web app for teleop, hand-teach, replay, review, and LeRobot v3 dataset export. | [`README`](./MimicRec/README.md) |
 | [`MimicAnno/`](./MimicAnno/README.md) | Offline pipeline for subtask boundary detection, Gemma 4 VLM labeling, SAM3 tracking, Viterbi smoothing, and export. | [`README`](./MimicAnno/README.md) |
 | [`raspi_for_vla/`](./raspi_for_vla/README.md) | Raspberry Pi 5 client: USB camera / mic capture, GPIO or wake-word triggered recording, sends observations to Jetson and receives transcripts. | [`README`](./raspi_for_vla/README.md) |
@@ -156,19 +154,20 @@ There is no root-level end-to-end command yet. Each submodule README is the sour
 
 **Shipped**
 
-- LIBERO-Spatial 94% with GEM-4-VLA v33.
-- Operator-supervised scripted demos for take from shelf, open lid, and hold / support.
-- MimicRec collect / review / replay flow on SO-101, reBot Arm, and Isaac Sim.
-- MimicAnno Phase 1-4 annotation pipeline.
-- VLA `/predict` contract and MimicRec client wiring, with a HoldPosition stub available for wire tests.
+- GEM-4-VLA v47: LIBERO 4-suite avg **74 %** at FT step 50 k (spatial 72 %, object 92 %, goal 89 %, long 43 %), single OXE+LIBERO pretrain base shared across suites.
+- Operator-supervised scripted demos for take from shelf, open lid, and hold / support on the reBot Arm wearable.
+- MimicRec collect / review / replay flow on SO-101, reBot Arm, and Isaac Sim, plus a public demo site.
+- MimicAnno subtask annotation (gripper / EEF signal + SAM3 + QLoRA-tuned Gemma 4) and human-video EEF estimation (MediaPipe + UniDAC).
+- Voice pipeline: `raspi_for_vla` (Pi 5, "hey GEM" wake-word + GPIO) ↔ `whisper_hackathon` (Jetson `faster-whisper`) ↔ VLA `/predict`.
+- VLA `/predict` contract with both `xvla_adapter` (real ckpt) and `hold_position` (no-GPU smoke) predictors.
 - Jetson on-device offline inference.
 - Wearable CAD prototype in `CAD_Library/`.
 
 **Covered in this repo**
 
-- Checkpoint-backed real model prediction is handled in the GEM-4-VLA inference path.
-- Cross-embodiment / multi-domain X-VLA is handled as part of the GEM-4-VLA training and evaluation scope.
-- MimicAnno Phase 5 autonomous labeling and edit UI are handled as part of the MimicAnno expansion scope.
+- Real-checkpoint inference is handled in the GEM-4-VLA `serve.py` path; FT checkpoints are hosted on Hugging Face under `takaki99/GEM-4-FT-*`.
+- Cross-embodiment / multi-domain training is handled in the GEM-4-VLA per-domain projector scope (e.g. ReBotArm single-task FTs over the OXE pretrain base).
+- Autonomous labeling and edit UI sit inside the MimicAnno expansion scope.
 
 **Roadmap, not implemented**
 
@@ -182,8 +181,8 @@ The next goal is not merely to make a robot arm move. It is to make assistance f
 
 ## Acknowledgements
 
-- **Hackathon**: [The Gemma 4 Good Hackathon](https://www.kaggle.com/competitions/gemma-4-good-hackathon/) - Kaggle x Google DeepMind, 2026-04-02 to 2026-05-18
-- **Upstream**: VLA-Adapter (Wang et al., 2025), X-VLA, SigLIP, Gemma 4, LeRobot, SAM3, LIBERO
+- **Hackathon**: Kaggle × Google DeepMind Gemma 4 hackathon, 2026-04-02 to 2026-05-18. See [`KaggleArticle.md`](./KaggleArticle.md) for the full write-up.
+- **Upstream**: VLA-Adapter (Wang et al., 2025), X-VLA, SigLIP, Gemma 4, LeRobot, SAM3, LIBERO, Open-X-Embodiment, MediaPipe, UniDAC, `faster-whisper`, openWakeWord, Unsloth.
 
 ## License
 
