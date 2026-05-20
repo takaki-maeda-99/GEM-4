@@ -120,15 +120,28 @@ root から直接実行する end-to-end コマンドはまだありません。
 - Cross-embodiment / multi-domain は GEM-4-VLA の per-domain projector スコープで扱う(reBot Arm の single-task FT を OXE pretrain base に積む等)。
 - Autonomous labeling と edit UI は MimicAnno 側の発展スコープとして扱う。
 
-**Roadmap, not implemented**
+**Roadmap, 未実装の方向性**
 
-この先で目指すのは、単に「ロボットアームが動く」ことではありません。身につけた人が、毎回細かく操作しなくても、自分の意図を短い言葉で伝えられること。環境が少し変わっても、過去の実演と注釈から動作を学び直せること。そして、すでに動き始めている on-device 推論を、より軽く、より速く、より自然な支援へ伸ばしていくことです。
+本プロジェクトでは、ウェアラブル VLA の中核(データ収集基盤、アノテーションツール、実機インターフェース)を統合しましたが、検証しきれていない部分や、引き続き改善が必要な領域があります。以下の方向性は [`KaggleArticle.md`](./KaggleArticle.md) の "What Remains to Be Done" を踏まえています。
 
-- **データを増やす**: 一人称視点の人間動画から手の動きや把持を推定し、ロボット学習に使える形へ変換する adapter。
-- **VLA をスケールする**: LIBERO から実機、単一ロボットから cross-embodiment / multi-domain へ広げ、データと adapter を差し替えながらタスクを増やしていく。
-- **長い作業を扱う**: MimicAnno の subtasks を使い、「次に何をするか」を決める planner と、「どう動くか」を実行する low-level controller に分けた hierarchical inference。
-- **身につけられる推論をさらに軽くする**: NF4 / HQQ 量子化などで、Jetson 上の on-device 推論をさらに高速・省メモリにする。
-- **安全な実世界支援へ進める**: E-stop、watchdog、operator supervision を前提に、短い単発タスクから、より自然な日常動作の連なりへ拡張する。
+*モデル側*
+
+- **Cross-embodiment を実スケールで検証する**: コード上は cross-embodiment 学習に対応していますが、複数のロボット形態にまたがって「共有知識・表現がどの程度転移するのか」を大規模に評価できていません。
+- **Long-horizon の性能を引き上げる**: LIBERO `long` は現状最も弱い suite(43 %)。短水平タスクのスコアを詰めることよりも、subtask を確実につなげる方を優先課題とします。
+- **MimicAnno subtask を使った階層推論**: 「次に何をするか」を決める high-level planner と「どう動くか」を実行する low-level controller を分け、MimicAnno の subtask label をその橋渡しに使う。
+- **マルチモーダル入力を拡張する**: 画像 + 言語に加えて、物体検出結果などの追加シグナルを VLA に流し込む。
+- **人間デモからの大規模 pretrain**: MimicAnno の EEF / subtask パイプラインで一人称動画からロボット学習用データを大量に生成し、日常支援アクションの多様性に対する汎化を狙う。
+
+*ハードウェア側*
+
+- **ユーザー依存性を下げたウェアラブル機構**: 現状の試作機は単一ユーザーを前提に設計されています。今後は装着・脱着しやすく、特定の身体に依存しすぎない機構へと改修。
+- **クロス被験者評価**: 装着感、着脱しやすさ、長時間使用時の身体的負担を、体格の異なる複数被験者で実測する。
+
+*ランタイム側*
+
+- **Jetson 上 on-device 推論をさらに軽量化**: NF4 / HQQ などの量子化と関連最適化で latency・メモリを削減し、クラウド非依存の実行をより現実的にする。
+
+長期的な目標は単に「ロボットアームを動かす」ことではありません。身につけた人が、自分の意図を短い言葉で伝えられること、蓄積した実演からシステムが動作を学び直せること、そして on-device 推論が日常使いに向けてさらに速く・軽く・自然になっていくことです。
 
 ## Acknowledgements
 

@@ -120,15 +120,28 @@ There is no root-level end-to-end command yet. Each submodule README is the sour
 - Cross-embodiment / multi-domain training is handled in the GEM-4-VLA per-domain projector scope (e.g. ReBotArm single-task FTs over the OXE pretrain base).
 - Autonomous labeling and edit UI sit inside the MimicAnno expansion scope.
 
-**Roadmap, not implemented**
+**Roadmap, not yet implemented**
 
-The next goal is not merely to make a robot arm move. It is to make assistance feel close enough to the body that the user can express intent in a few words, let the system adapt from demonstrations, and make the on-device inference path faster, lighter, and more natural for daily use.
+In this project we integrated the core pieces of a wearable VLA system — data collection infrastructure, annotation tools, and the real-robot interface — but several aspects have not been fully validated and several areas still need real work. The directions below come from the [`KaggleArticle.md`](./KaggleArticle.md) "What Remains to Be Done" discussion.
 
-- **Scale demonstrations**: a human first-person video adapter that converts hand motion and grasp cues into robot-trainable action data.
-- **Scale the VLA**: move from LIBERO to real robots, from one embodiment to cross-embodiment / multi-domain learning, and grow the task set by swapping data and adapters.
-- **Handle longer tasks**: hierarchical inference with MimicAnno subtasks, separating a high-level planner from the low-level controller that moves the arm.
-- **Make wearable inference lighter**: NF4 / HQQ quantization and related optimization for faster, lower-memory Jetson on-device inference.
-- **Grow toward safe real-world assistance**: starting from short supervised tasks, then expanding toward more natural chains of everyday actions under E-stop, watchdog, and operator supervision.
+*Model side*
+
+- **Validate cross-embodiment at scale**: cross-embodiment learning is supported in the codebase, but we have not yet evaluated, at scale, how much shared knowledge and representation actually transfers across multiple robot embodiments.
+- **Lift Long-horizon performance**: LIBERO `long` is still our weakest suite (43 %). The priority is reliably chaining multiple subtasks rather than nudging short-horizon numbers further.
+- **Hierarchical reasoning on MimicAnno subtasks**: split a high-level planner that decides "what to do next" from a low-level controller that decides "how to move," using MimicAnno's subtask labels as the bridge.
+- **More multimodal inputs**: extend the VLA to consume additional signals beyond images + language — e.g. object detection outputs as an extra conditioning channel.
+- **Large-scale pretraining from human demonstrations**: pretrain at scale using robot-shaped data generated from first-person human videos (via the MimicAnno EEF / subtask pipelines), aiming for better generalization to the diversity of everyday assistive actions.
+
+*Hardware side*
+
+- **Less user-specific wearable mechanism**: the current prototype was designed around a single wearer. Future iterations should be easier to put on / take off and less dependent on a specific body.
+- **Cross-subject evaluation**: actually evaluate fit, donning / doffing, and long-duration physical burden across different body shapes, rather than a single-user check.
+
+*Runtime side*
+
+- **Lighter on-device inference on Jetson**: push quantization (NF4 / HQQ etc.) and related optimization to reduce latency and memory, making cloud-independent execution more practical.
+
+The longer-term goal is not merely to move a robot arm. It is to keep the assistance close enough to the body that the user can express intent in a few words, let the system adapt from accumulated demonstrations, and let the on-device inference path get faster, lighter, and more natural for daily use.
 
 ## Acknowledgements
 
