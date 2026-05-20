@@ -4,6 +4,8 @@
 
 > Gemma 4 をバックボーンにしたウェアラブル Vision-Language-Action アシスタント。見て、音声指示を理解し、動いて支援する、ハンズフリーの相棒アームプロトタイプです。
 
+> 本プロジェクトは **Kaggle × Google DeepMind Gemma 4 ハッカソン**（2026-04-02 〜 2026-05-18）の成果物として開発されました。詳細は [`KaggleArticle.md`](./KaggleArticle.md) を参照。
+
 [![Backbone](https://img.shields.io/badge/Backbone-Gemma%204%20E2B-blue)](https://www.kaggle.com/models/google/gemma-4)
 [![Pretrain](https://img.shields.io/badge/Pretrain-OXE%20%2B%20LIBERO%204--suite-blue)](https://huggingface.co/takaki99/GEM-4-Pretrained-OXE)
 ![LIBERO 4-suite avg](https://img.shields.io/badge/LIBERO%204--suite%20avg-74%25-brightgreen)
@@ -57,6 +59,25 @@
 | FT レシピ | `bs=8 × 2 GPU × accum=2 = eff bs 32` (spatial / object / goal)、`bs=8 × 4 GPU × accum=4 = eff bs 128` (libero_10) |
 | Hardware / SW | RTX 6000 Ada / Ubuntu 22.04 / CUDA 12.6 / Python 3.12 / `uv` lockfile |
 | 正規化統計 | 各 checkpoint に同梱の `norm_stats.json` |
+
+## ハードウェア構成部品
+
+ウェアラブル試作機の参考部品リストです。リンクは海外で入手可能な販売元、価格は執筆時点の USD 概算 MSRP です。研究プロトタイプの目安であり、再現用に固定された BOM ではありません（例: RealSense D435i は USB ウェブカムで代替可）。
+
+| 部品 | 用途 | 数量 | リンク | 概算費用 (USD) |
+|---|---|---|---|---|
+| Intel RealSense D435i | 手首カメラ（USB ウェブカムで代替可） | 1 | [Intel RealSense Store](https://store.intelrealsense.com/buy-intel-realsense-depth-camera-d435i.html) | $329 |
+| GoPro HERO11 Black | 胸カメラ本体 | 1 | [gopro.com](https://gopro.com/en/us/shop/cameras/hero11-black/CHDHX-111-master.html) | $400 |
+| GoPro Max Lens Mod | HERO11 用広角レンズ | 1 | [gopro.com](https://gopro.com/en/us/shop/mounts-accessories/max-lens-mod/ADWAL-001.html) | $99 |
+| GoPro Media Mod | HERO11 用 HDMI / マイク付きフレーム | 1 | [gopro.com](https://gopro.com/en/us/shop/mounts-accessories/camera-media-mod/ADFMD-001.html) | $100 |
+| HDMI キャプチャ (USB) | GoPro → Jetson 映像取り込み | 1 | [UGREEN on Amazon](https://www.amazon.com/UGREEN-Capture-Streaming-Recording-Compatible/dp/B0CFQ2BMPZ) | $20 |
+| DC-DC コンバータ（12 V, 15 A buck） | ウェアラブル機構の電源 | 1 | [同等モジュール on Amazon](https://www.amazon.com/Voltage-Power-Converter-Module-DC-DC/dp/B01H7JW842) | $25 |
+| Raspberry Pi 5 (8 GB) | 装着側の音声 / GPIO クライアント（`raspi_for_vla`） | 1 | [raspberrypi.com](https://www.raspberrypi.com/products/raspberry-pi-5/) | $80 |
+| NVIDIA Jetson AGX Orin (32 GB H01 Kit) | オンデバイス VLA + Whisper 推論 | 1 | [Seeed Studio](https://www.seeedstudio.com/AGX-Orin-32GB-H01-Kit-p-5569.html) | $1,449 |
+| reBot Arm B601-DM + Gripper | ウェアラブル ロボットアーム | 1 | [Seeed Studio](https://www.seeedstudio.com/reBot-Arm-B601-DM-Bundle.html) | $1,197 |
+| 3DP パーツ | カスタムマウント（`CAD_Library/` 参照） | — | — | ~$25 |
+| MDF・その他材料 | フレーム / ハーネス材料 | — | — | ~$30 |
+| **合計** | | | | **≈ $3,754** |
 
 ## システム
 <img width="1017" height="712" alt="image" src="https://github.com/user-attachments/assets/6ef4c7d2-b4ad-46ab-9ab7-1a137df98cf5" />
@@ -133,6 +154,18 @@ root から直接実行する end-to-end コマンドはまだありません。
 今後は、人間デモデータから生成したロボットデータを用いた大規模な pretrain を進め、日常環境における多様な支援アクションへの汎化を目指します。あわせて、long-horizon タスクに対する subtask 推論ベースの階層推論の導入や、物体検出結果のようなマルチモーダル入力を取り込めるようモデルを拡張していく予定です。
 
 ハードウェア面では、特定のユーザーへの依存度がより低く、着脱しやすいウェアラブル機構の開発を続けます。さらに、量子化などの最適化技術によって Jetson 上のローカル推論の効率を改善し、latency とメモリ使用量を削減して、クラウド非依存の実行をより実用的なものにしていきます。
+
+## Contributors
+
+| 名前 | 役割 | 貢献 |
+|---|---|---|
+| [takakimaeda](https://www.kaggle.com/takakimaeda) | リーダー | システム設計、VLA リサーチ・構築、MimicRec 開発、実機制御の各種実装 |
+| [halfvolley](https://www.kaggle.com/halfvolley) | メンバー | データ収集、ビデオ撮影協力 |
+| [gayagayagaya4](https://www.kaggle.com/gayagayagaya4) | メンバー | アノテーションパイプライン リサーチ、MimicAnno 開発、Jetson 環境構築、音声認識開発（ウェイクワード、Whisper）、QLoRA リサーチ |
+| [yutasoyokaze](https://www.kaggle.com/yutasoyokaze) | メンバー | データ収集、実機制御デバッグ |
+| [hosakayushun](https://www.kaggle.com/hosakayushun) | メンバー | ハードウェア設計・製作、ビデオ撮影・編集 |
+
+プロフィールリンクは各メンバーの Kaggle アカウントです。
 
 ## Acknowledgements
 

@@ -4,6 +4,8 @@
 
 > A Gemma 4-based wearable Vision-Language-Action assistant: a hands-free companion arm prototype that sees, understands voice instructions, and moves to help people with limb or visual impairments.
 
+> Built for the **Kaggle × Google DeepMind Gemma 4 Hackathon** (2026-04-02 – 2026-05-18). Full write-up: [`KaggleArticle.md`](./KaggleArticle.md).
+
 [![Backbone](https://img.shields.io/badge/Backbone-Gemma%204%20E2B-blue)](https://www.kaggle.com/models/google/gemma-4)
 [![Pretrain](https://img.shields.io/badge/Pretrain-OXE%20%2B%20LIBERO%204--suite-blue)](https://huggingface.co/takaki99/GEM-4-Pretrained-OXE)
 ![LIBERO 4-suite avg](https://img.shields.io/badge/LIBERO%204--suite%20avg-74%25-brightgreen)
@@ -13,15 +15,29 @@
 
 ![alt text](media/HEROv1.png)
 
-## Overview
+# Background and Project Overview
 
-A cup is just out of reach. A lid needs two hands. An object needs to be held steady for a few seconds. Small moments like these appear again and again in daily life. This project asks what it would take to have "another arm" present at exactly those moments.
+Much of daily life assumes that people can freely use both arms, locate objects in front of them, and reach naturally for what they need. For people with visual or upper-limb impairments, this assumption does not hold. This project develops a wearable VLA (Vision-Language-Action) assistant based on Gemma 4 that serves as a “second arm” for these users, together with the data collection, generation, and annotation infrastructure needed to train it as an integrated system.
 
-We explore that idea as a wearable one-arm robot with a chest camera, a wrist camera, and natural-language voice instructions. The user says "take it," "open it," or "hold this." The system reads the intent, looks at the scene, and turns the request into a short physical action. The goal is **semi-autonomous assistance**: not a fully autonomous robot, but something closer to an extension of the user's own body and intent.
+# Why a wearable form factor
 
-The technical bet is **SigLIP + Gemma 4-E2B + per-domain projectors + L1 action head**, connected through an action-generation adapter that cross-attends over each Gemma 4 layer. The Gemma 4 backbone stays frozen and only the smaller modules around it are trained, so we can iterate quickly and recover from failed experiments. A single base model is pretrained on **Open-X-Embodiment + LIBERO at ~8 : 2** and then fine-tuned per task / suite, reaching **LIBERO 4-suite average 74 %** in simulation (spatial 72 %, object 92 %, goal 89 %, long 43 % — 10 episodes per task × 10 tasks). The inference stack also runs on Jetson, so on-device use is possible without depending on the cloud.
+Daily-life assistance often consists of small physical actions: pulling out a chair, opening a door, taking an item from a shelf, picking up a dropped object, retrieving something from a bag, or holding a container steady. These actions are not a fixed task set; they arise unpredictably across everyday situations. Rather than a large robot that automates housework, users need a system that moves with them and assists with the specific action needed at that moment. This motivates a wearable form factor that stays close to the user’s body.
 
-This is a research prototype with operator-supervised demos. It is **not** a medical device or certified assistive device.
+# The challenges this introduces
+
+Wearability increases flexibility but also raises the technical difficulty. Because target actions arise across daily life, hand-engineering a small set of predefined tasks is insufficient. The system must operate safely near the body, handle a constantly shifting first-person camera viewpoint, work within the arm’s limited reachable range, and remain lightweight enough for local execution without relying on a large cloud-hosted model.
+
+# Approach: model and data as two pillars
+
+The project addresses these challenges through both model design and data infrastructure.
+
+On the model side, we built a VLA model that uses Gemma 4’s visual and language understanding to generate robot arm actions from the user’s words and surrounding context. With the lightweight Gemma 4-E2B backbone, the model combines the recognition and action generation capabilities required for daily-life assistance while keeping local execution feasible. Effective learning from diverse data was also a core design requirement.
+
+On the data side, we focused on first-person human demonstration data. Direct teleoperation, collected episode by episode, cannot cover the countless support situations found in daily life. By capturing natural human actions in everyday environments and converting them into robot-training data, we can obtain a broader range of support tasks more naturally and at greater scale. To enable this, we developed a pipeline for converting human demonstrations into robot-training data, MimicAnno for subtask labeling and object annotation, and MimicRec for integrating data collection, management, and inference interfaces. Together, these components form a platform that connects data collection, annotation, training, evaluation, and re-training into a continuous development loop.
+
+# The value of this project
+
+The significance of this project is not simply that it moves a robot arm. It combines a Gemma 4-based wearable VLA architecture that learns from diverse data with a scalable, human-demonstration-driven data generation and training pipeline designed for the diversity of daily-life support tasks. Rather than a one-off demo, we implemented a VLA system that continuously learns from everyday motions and responds to previously unseen support situations.
 
 ## What Is VLA?
 
@@ -57,6 +73,25 @@ For this project, VLA is the bridge from a user's instruction and camera images 
 | FT recipe | `bs=8 × 2 GPU × accum=2 = eff bs 32` (spatial / object / goal); `bs=8 × 4 GPU × accum=4 = eff bs 128` (libero_10) |
 | Hardware / SW | RTX 6000 Ada / Ubuntu 22.04 / CUDA 12.6 / Python 3.12 / `uv` lockfile |
 | Normalization stats | Distributed alongside each checkpoint as `norm_stats.json` |
+
+## Hardware Bill of Materials
+
+Reference parts list for the wearable prototype. Links point to internationally available vendors and prices are approximate USD MSRPs at time of writing — this is an indicative BOM for a research prototype, not a fixed reproduction recipe, and substitutions (e.g. a USB webcam in place of the RealSense D435i) are expected.
+
+| Component | Use | Qty | Link | Approx. Cost (USD) |
+|---|---|---|---|---|
+| Intel RealSense D435i | Wrist camera (USB webcam fallback) | 1 | [Intel RealSense Store](https://store.intelrealsense.com/buy-intel-realsense-depth-camera-d435i.html) | $329 |
+| GoPro HERO11 Black | Chest camera body | 1 | [gopro.com](https://gopro.com/en/us/shop/cameras/hero11-black/CHDHX-111-master.html) | $400 |
+| GoPro Max Lens Mod | Wide-FOV lens for HERO11 | 1 | [gopro.com](https://gopro.com/en/us/shop/mounts-accessories/max-lens-mod/ADWAL-001.html) | $99 |
+| GoPro Media Mod | Frame with HDMI / mic for HERO11 | 1 | [gopro.com](https://gopro.com/en/us/shop/mounts-accessories/camera-media-mod/ADFMD-001.html) | $100 |
+| HDMI capture (USB) | GoPro → Jetson video ingest | 1 | [UGREEN on Amazon](https://www.amazon.com/UGREEN-Capture-Streaming-Recording-Compatible/dp/B0CFQ2BMPZ) | $20 |
+| DC-DC converter (12 V, 15 A buck) | Power regulation for the wearable rig | 1 | [Equivalent module on Amazon](https://www.amazon.com/Voltage-Power-Converter-Module-DC-DC/dp/B01H7JW842) | $25 |
+| Raspberry Pi 5 (8 GB) | On-body voice / GPIO client (`raspi_for_vla`) | 1 | [raspberrypi.com](https://www.raspberrypi.com/products/raspberry-pi-5/) | $80 |
+| NVIDIA Jetson AGX Orin (32 GB H01 Kit) | On-device VLA + Whisper inference | 1 | [Seeed Studio](https://www.seeedstudio.com/AGX-Orin-32GB-H01-Kit-p-5569.html) | $1,449 |
+| reBot Arm B601-DM + Gripper | Wearable robot arm | 1 | [Seeed Studio](https://www.seeedstudio.com/reBot-Arm-B601-DM-Bundle.html) | $1,197 |
+| 3D-printed parts | Custom mounts (see `CAD_Library/`) | — | — | ~$25 |
+| MDF & misc materials | Frame / harness materials | — | — | ~$30 |
+| **Total** | | | | **≈ $3,754** |
 
 ## System
 <img width="1017" height="712" alt="image" src="https://github.com/user-attachments/assets/6ef4c7d2-b4ad-46ab-9ab7-1a137df98cf5" />
@@ -133,6 +168,18 @@ Third, the wearable hardware is still at the prototype stage and has been design
 Moving forward, we plan to pursue large-scale pretraining using robot data generated from human demonstration data, with the goal of improving generalization to diverse assistive actions in everyday environments. We also plan to introduce hierarchical reasoning based on subtask inference for long-horizon tasks, and to extend the model to incorporate multimodal inputs such as object detection results.
 
 On the hardware side, we will continue developing a wearable mechanism that is less dependent on a specific user and easier to put on and take off. In addition, we will improve the efficiency of local inference on Jetson through optimization techniques such as quantization, reducing both latency and memory usage and making cloud-independent execution more practical.
+
+## Contributors
+
+| Name | Role | Contributions |
+|---|---|---|
+| [takakimaeda](https://www.kaggle.com/takakimaeda) | Lead | System architecture, VLA research and implementation, MimicRec development, real-robot control |
+| [gayagayagaya4](https://www.kaggle.com/gayagayagaya4) | Member | Annotation pipeline research, MimicAnno development, Jetson environment setup, speech recognition (wake-word, Whisper), QLoRA research |
+| [hosakayushun](https://www.kaggle.com/hosakayushun) | Member | Hardware design and fabrication, video shooting and editing |
+| [yutasoyokaze](https://www.kaggle.com/yutasoyokaze) | Member | Data collection, real-robot control debugging |
+| [halfvolley](https://www.kaggle.com/halfvolley) | Member | Data collection, video shooting support |
+
+Profile links point to each contributor's Kaggle account.
 
 ## Acknowledgements
 
