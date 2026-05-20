@@ -60,6 +60,11 @@
 | Hardware / SW | RTX 6000 Ada / Ubuntu 22.04 / CUDA 12.6 / Python 3.12 / `uv` lockfile |
 | 正規化統計 | 各 checkpoint に同梱の `norm_stats.json` |
 
+### 計算資源とデータの開示
+
+- **学習・評価環境**: 開発および評価には、許可を得て **Toyota Technological Institute・Ukita Lab** の GPU サーバを使用しました。プライベートな研究室データや未公開の研究資産は使用しておらず、公開データセット（OXE、LIBERO）と自分たちで収集したデモンストレーションのみを利用しています。
+- **最終デモ環境**: FT checkpoint は約 12 GB（`model.pt` ≈ 11.7 GB）で、市販の 16〜24 GB クラスのコンシューマ GPU、クラウド GPU インスタンス、または Jetson AGX Orin（32 GB）上のオンデバイス実行で動作します。デモの再現に特別な研究室リソースは必要ありません。
+
 ## ハードウェア構成部品
 
 ウェアラブル試作機の参考部品リストです。リンクは海外で入手可能な販売元、価格は執筆時点の USD 概算 MSRP です。研究プロトタイプの目安であり、再現用に固定された BOM ではありません（例: RealSense D435i は USB ウェブカムで代替可）。

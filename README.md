@@ -74,6 +74,11 @@ For this project, VLA is the bridge from a user's instruction and camera images 
 | Hardware / SW | RTX 6000 Ada / Ubuntu 22.04 / CUDA 12.6 / Python 3.12 / `uv` lockfile |
 | Normalization stats | Distributed alongside each checkpoint as `norm_stats.json` |
 
+### Compute & Data Disclosure
+
+- **Training / evaluation compute**: Development and benchmarking used a GPU server at **Toyota Technological Institute, Ukita Lab**, with the lab's permission. We did not use any private lab data or unpublished research assets — only public datasets (OXE, LIBERO) and our own collected demonstrations.
+- **Final demo compute**: The FT checkpoint is ~12 GB (`model.pt` ≈ 11.7 GB). It runs on commodity hardware — a single 16–24 GB consumer GPU, a cloud GPU instance, or on-device on a Jetson AGX Orin (32 GB) — so no special lab resource is required to reproduce the demo.
+
 ## Hardware Bill of Materials
 
 Reference parts list for the wearable prototype. Links point to internationally available vendors and prices are approximate USD MSRPs at time of writing — this is an indicative BOM for a research prototype, not a fixed reproduction recipe, and substitutions (e.g. a USB webcam in place of the RealSense D435i) are expected.
