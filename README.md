@@ -1,4 +1,4 @@
-# vla-gemma-4
+# GEM-4
 
 **English** | [日本語](README.ja.md)
 
