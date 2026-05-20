@@ -63,52 +63,7 @@ All real-robot sessions require an operator, physical E-stop, and software watch
 | Normalization stats | Distributed alongside each checkpoint as `norm_stats.json` |
 
 ## System
-
-```mermaid
-flowchart LR
-    User["User<br/>voice instruction"]
-    Raspi["raspi_for_vla<br/>Raspberry Pi 5 client<br/>mic + camera, wake-word / GPIO"]
-    Whisper["whisper_hackathon<br/>Jetson Whisper server<br/>speech to text"]
-    HW["Wearable hardware<br/>1-arm reBot B601-DM<br/>chest + wrist cameras"]
-    Rec["MimicRec<br/>collect / replay / inference client"]
-    Anno["MimicAnno<br/>offline subtask annotation"]
-    Train["GEM-4-VLA<br/>SigLIP + Gemma 4 E2B<br/>per-domain projectors + L1 head"]
-    Infer["GEM-4-VLA inference server<br/>scripts/serve.py /predict"]
-    Data[("LeRobot v3 episodes<br/>+ subtask_index")]
-    Ckpt[("checkpoint<br/>+ norm stats")]
-
-    User -->|speech| Raspi
-    Raspi -->|audio| Whisper
-    Whisper -->|text| Raspi
-    Raspi -->|instruction| Infer
-    User --> Rec
-    HW <--> Rec
-    Rec --> Data
-    Data --> Anno
-    Anno --> Data
-    Data --> Train
-    Train --> Ckpt
-    Ckpt --> Infer
-    Infer --> Rec
-    Rec --> HW
-```
-
-Gemma 4 is used in two places:
-
-| Where | Role |
-|---|---|
-| `GEM-4-VLA` | Main robot policy. Action-generation adapter cross-attends over each Gemma 4 layer; the LLM stays frozen and only the projectors + action head are trained. |
-| `MimicAnno` subtask labeler | Offline image-text-to-text VLM labeling for subtask phases, QLoRA-finetuned with Unsloth on top of Gemma 4. |
-
-On-device offline inference on Jetson is supported, so the runtime path can avoid cloud dependency.
-
-## Why Gemma 4 + VLA-Adapter
-
-1. **Efficient adaptation**: the LLM stays frozen; only the small modules that connect language, images, and robot actions are trained.
-2. **Good architectural fit**: Gemma 4's layer-wise structure works well with VLA-Adapter's way of injecting visual and action information into the model.
-3. **Open weights**: LoRA, quantization, and architecture experiments are practical within the hackathon constraints.
-4. **Multilingual and world-aware**: Japanese / English instructions, object names, and physical commonsense are useful for generalization.
-5. **On-device execution**: E2B-size Gemma 4 plus the lightweight adapter setup enables offline inference on Jetson without depending on the cloud.
+<img width="1017" height="712" alt="image" src="https://github.com/user-attachments/assets/6ef4c7d2-b4ad-46ab-9ab7-1a137df98cf5" />
 
 ## Repository Layout
 
