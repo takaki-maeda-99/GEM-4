@@ -71,13 +71,13 @@
 | GoPro Max Lens Mod | HERO11 用広角レンズ | 1 | [gopro.com](https://gopro.com/en/us/shop/mounts-accessories/max-lens-mod/ADWAL-001.html) | $99 |
 | GoPro Media Mod | HERO11 用 HDMI / マイク付きフレーム | 1 | [gopro.com](https://gopro.com/en/us/shop/mounts-accessories/camera-media-mod/ADFMD-001.html) | $100 |
 | HDMI キャプチャ (USB) | GoPro → Jetson 映像取り込み | 1 | [UGREEN on Amazon](https://www.amazon.com/UGREEN-Capture-Streaming-Recording-Compatible/dp/B0CFQ2BMPZ) | $20 |
-| DC-DC コンバータ（12 V, 15 A buck） | ウェアラブル機構の電源 | 1 | [同等モジュール on Amazon](https://www.amazon.com/Voltage-Power-Converter-Module-DC-DC/dp/B01H7JW842) | $25 |
+| DC-DC コンバータ（uxcell IP68、24 V → 19 V、5 A / 95 W） | ウェアラブル機構の電源（Jetson 19 V レール） | 1 | [uxcell on Amazon](https://www.amazon.com/uxcell-Converter-Regulator-Waterproof-Transformer/dp/B01H97ETVM) | $20 |
 | Raspberry Pi 5 (8 GB) | 装着側の音声 / GPIO クライアント（`raspi_for_vla`） | 1 | [raspberrypi.com](https://www.raspberrypi.com/products/raspberry-pi-5/) | $80 |
 | NVIDIA Jetson AGX Orin (32 GB H01 Kit) | オンデバイス VLA + Whisper 推論 | 1 | [Seeed Studio](https://www.seeedstudio.com/AGX-Orin-32GB-H01-Kit-p-5569.html) | $1,449 |
 | reBot Arm B601-DM + Gripper | ウェアラブル ロボットアーム | 1 | [Seeed Studio](https://www.seeedstudio.com/reBot-Arm-B601-DM-Bundle.html) | $1,197 |
 | 3DP パーツ | カスタムマウント（`CAD_Library/` 参照） | — | — | ~$25 |
-| MDF・その他材料 | フレーム / ハーネス材料 | — | — | ~$30 |
-| **合計** | | | | **≈ $3,754** |
+| MDF・その他材料 | フレーム / ハーネス材料 | — | — | ~$100 |
+| **合計** | | | | **≈ $3,819** |
 
 ## システム
 <img width="1017" height="712" alt="image" src="https://github.com/user-attachments/assets/6ef4c7d2-b4ad-46ab-9ab7-1a137df98cf5" />

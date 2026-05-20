@@ -85,13 +85,13 @@ Reference parts list for the wearable prototype. Links point to internationally 
 | GoPro Max Lens Mod | Wide-FOV lens for HERO11 | 1 | [gopro.com](https://gopro.com/en/us/shop/mounts-accessories/max-lens-mod/ADWAL-001.html) | $99 |
 | GoPro Media Mod | Frame with HDMI / mic for HERO11 | 1 | [gopro.com](https://gopro.com/en/us/shop/mounts-accessories/camera-media-mod/ADFMD-001.html) | $100 |
 | HDMI capture (USB) | GoPro → Jetson video ingest | 1 | [UGREEN on Amazon](https://www.amazon.com/UGREEN-Capture-Streaming-Recording-Compatible/dp/B0CFQ2BMPZ) | $20 |
-| DC-DC converter (12 V, 15 A buck) | Power regulation for the wearable rig | 1 | [Equivalent module on Amazon](https://www.amazon.com/Voltage-Power-Converter-Module-DC-DC/dp/B01H7JW842) | $25 |
+| DC-DC converter (uxcell IP68, 24 V → 19 V, 5 A / 95 W) | Power regulation for the wearable rig (Jetson 19 V rail) | 1 | [uxcell on Amazon](https://www.amazon.com/uxcell-Converter-Regulator-Waterproof-Transformer/dp/B01H97ETVM) | $20 |
 | Raspberry Pi 5 (8 GB) | On-body voice / GPIO client (`raspi_for_vla`) | 1 | [raspberrypi.com](https://www.raspberrypi.com/products/raspberry-pi-5/) | $80 |
 | NVIDIA Jetson AGX Orin (32 GB H01 Kit) | On-device VLA + Whisper inference | 1 | [Seeed Studio](https://www.seeedstudio.com/AGX-Orin-32GB-H01-Kit-p-5569.html) | $1,449 |
 | reBot Arm B601-DM + Gripper | Wearable robot arm | 1 | [Seeed Studio](https://www.seeedstudio.com/reBot-Arm-B601-DM-Bundle.html) | $1,197 |
 | 3D-printed parts | Custom mounts (see `CAD_Library/`) | — | — | ~$25 |
-| MDF & misc materials | Frame / harness materials | — | — | ~$30 |
-| **Total** | | | | **≈ $3,754** |
+| MDF & misc materials | Frame / harness materials | — | — | ~$100 |
+| **Total** | | | | **≈ $3,819** |
 
 ## System
 <img width="1017" height="712" alt="image" src="https://github.com/user-attachments/assets/6ef4c7d2-b4ad-46ab-9ab7-1a137df98cf5" />
