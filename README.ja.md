@@ -38,12 +38,8 @@
 - **VLA を end-to-end で学習・評価できる**: [`takaki99/GEM-4-Pretrained-OXE`](https://huggingface.co/takaki99/GEM-4-Pretrained-OXE) を **OXE + LIBERO (~8 : 2)** で pretrain し、各 LIBERO suite に FT。Gemma 4 本体は凍結し、projector / action head 側を学習する構成で、FT step 50 k 時点で **LIBERO 4-suite 平均 74 %**(spatial 72 %、object 92 %、goal 89 %、long 43 %、各 suite 100 episodes)。特に Object / Goal は、Gemma 4 の言語・視覚理解を有効活用できていることを示しています。
 - **マルチドメインへ広げる土台がある**: GEM-4-VLA は LIBERO だけでなく、複数ドメインの RLDS / LeRobot データと per-domain の input/output projector を扱う前提で設計されています。cross-embodiment / multi-domain 学習も対応スコープに含めており、今後ロボット形態やタスクを増やしていくための中核になります。
 - **音声 in、ロボット動作 out、on-device で動く**: `raspi_for_vla` クライアントが「hey GEM」発話をトリガに音声を取得し、Jetson 側の `whisper_hackathon` で文字起こし、その結果と胸 / 手首カメラ画像を VLA `/predict` に渡して動作を返します。マイク・カメラ・文字起こし・推論まですべて on-device に留められ、クラウド往復を必要としません。
-- **実機で見せられるタスクがある**: 棚から取る、フタを開ける、支える / 持つ、の 3 タスクを operator-supervised scripted demo として実施。特に「支える / 持つ」は、単発の pick-and-place だけでなく、身体支援らしい持続的な介助へ向かうデモです。
 - **MimicRec が VLA の入口を作る**: teleop、hand-teach、replay、review、LeRobot v3 export、VLA `/predict` 接続を 1 つの local-first Web アプリにまとめています。ロボット側のインターフェースを抽象化しているので、reBot Arm、SO-101、Isaac Sim、mock のいずれでも、ロボットごとの control adapter を足すだけで同じフローが回ります。デモサイト: <https://takaki-maeda-99.github.io/MimicRec/>。
 - **MimicAnno が学習データを濃くする**: subtask boundary は gripper open/close、EEF 速度 / 加速度、action norm の変化から検出。各 segment を SAM3 で追跡し、Unsloth + QLoRA で finetune した Gemma 4 に渡して、verb / object / target / confidence を持つ subtask label を生成します。さらに一人称 GoPro 動画から、MediaPipe の hand landmark と UniDAC の metric depth を組み合わせて EEF 位置・姿勢・pinch 距離を復元するパイプラインも備え、人間デモから直接学習データを生成する道筋を作っています。
-- **ハードウェアまで公開している**: ウェアラブルアーム試作機と CAD ファイルを `CAD_Library/` に収録。モデルだけでなく、装着・カメラ配置・データ収集治具まで含めた end-to-end prototype です。
-
-実機セッションには、オペレーター、物理 E-stop、ソフトウェア watchdog が必須です。
 
 <!-- TODO: デモ GIF / 動画を media/ 配下に追加 -->
 
