@@ -122,26 +122,17 @@ There is no root-level end-to-end command yet. Each submodule README is the sour
 
 **Roadmap, not yet implemented**
 
-In this project we integrated the core pieces of a wearable VLA system — data collection infrastructure, annotation tools, and the real-robot interface — but several aspects have not been fully validated and several areas still need real work. The directions below come from the [`KaggleArticle.md`](./KaggleArticle.md) "What Remains to Be Done" discussion.
+In this project, we integrated the core components of a wearable VLA system, including the data collection infrastructure, annotation tools, and real-robot interface. At the same time, there remain aspects that have not yet been fully validated, as well as areas that require further improvement.
 
-*Model side*
+First, although cross-embodiment learning is supported in the codebase, we have not yet conducted large-scale validation across multiple robot embodiments. Future work should more systematically evaluate the extent to which shared knowledge and representations can be transferred across different robots.
 
-- **Validate cross-embodiment at scale**: cross-embodiment learning is supported in the codebase, but we have not yet evaluated, at scale, how much shared knowledge and representation actually transfers across multiple robot embodiments.
-- **Lift Long-horizon performance**: LIBERO `long` is still our weakest suite (43 %). The priority is reliably chaining multiple subtasks rather than nudging short-horizon numbers further.
-- **Hierarchical reasoning on MimicAnno subtasks**: split a high-level planner that decides "what to do next" from a low-level controller that decides "how to move," using MimicAnno's subtask labels as the bridge.
-- **More multimodal inputs**: extend the VLA to consume additional signals beyond images + language — e.g. object detection outputs as an extra conditioning channel.
-- **Large-scale pretraining from human demonstrations**: pretrain at scale using robot-shaped data generated from first-person human videos (via the MimicAnno EEF / subtask pipelines), aiming for better generalization to the diversity of everyday assistive actions.
+Second, the current VLA model still has room for improvement. In particular, its performance on Long tasks in the LIBERO benchmark remains limited, and the ability to reliably connect multiple subtasks is an important direction for future work.
 
-*Hardware side*
+Third, the wearable hardware is still at the prototype stage and has been designed around a single user. We have not yet conducted cross-subject evaluations of the wearing form or physical fit. Future evaluations should consider differences in body shape, ease of wearing and removal, and the physical burden of long-term use.
 
-- **Less user-specific wearable mechanism**: the current prototype was designed around a single wearer. Future iterations should be easier to put on / take off and less dependent on a specific body.
-- **Cross-subject evaluation**: actually evaluate fit, donning / doffing, and long-duration physical burden across different body shapes, rather than a single-user check.
+Moving forward, we plan to pursue large-scale pretraining using robot data generated from human demonstration data, with the goal of improving generalization to diverse assistive actions in everyday environments. We also plan to introduce hierarchical reasoning based on subtask inference for long-horizon tasks, and to extend the model to incorporate multimodal inputs such as object detection results.
 
-*Runtime side*
-
-- **Lighter on-device inference on Jetson**: push quantization (NF4 / HQQ etc.) and related optimization to reduce latency and memory, making cloud-independent execution more practical.
-
-The longer-term goal is not merely to move a robot arm. It is to keep the assistance close enough to the body that the user can express intent in a few words, let the system adapt from accumulated demonstrations, and let the on-device inference path get faster, lighter, and more natural for daily use.
+On the hardware side, we will continue developing a wearable mechanism that is less dependent on a specific user and easier to put on and take off. In addition, we will improve the efficiency of local inference on Jetson through optimization techniques such as quantization, reducing both latency and memory usage and making cloud-independent execution more practical.
 
 ## Acknowledgements
 
