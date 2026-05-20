@@ -1,4 +1,4 @@
-# vla-gemma-4
+# GEM-4
 
 [English](README.md) | **日本語**
 
@@ -63,52 +63,7 @@
 | 正規化統計 | 各 checkpoint に同梱の `norm_stats.json` |
 
 ## システム
-
-```mermaid
-flowchart LR
-    User["User<br/>voice instruction"]
-    Raspi["raspi_for_vla<br/>Raspberry Pi 5 client<br/>mic + camera, wake-word / GPIO"]
-    Whisper["whisper_hackathon<br/>Jetson Whisper server<br/>speech to text"]
-    HW["Wearable hardware<br/>1-arm reBot B601-DM<br/>chest + wrist cameras"]
-    Rec["MimicRec<br/>collect / replay / inference client"]
-    Anno["MimicAnno<br/>offline subtask annotation"]
-    Train["GEM-4-VLA<br/>SigLIP + Gemma 4 E2B<br/>per-domain projectors + L1 head"]
-    Infer["GEM-4-VLA inference server<br/>scripts/serve.py /predict"]
-    Data[("LeRobot v3 episodes<br/>+ subtask_index")]
-    Ckpt[("checkpoint<br/>+ norm stats")]
-
-    User -->|speech| Raspi
-    Raspi -->|audio| Whisper
-    Whisper -->|text| Raspi
-    Raspi -->|instruction| Infer
-    User --> Rec
-    HW <--> Rec
-    Rec --> Data
-    Data --> Anno
-    Anno --> Data
-    Data --> Train
-    Train --> Ckpt
-    Ckpt --> Infer
-    Infer --> Rec
-    Rec --> HW
-```
-
-Gemma 4 は主に 2 箇所で使っています。
-
-| Where | Role |
-|---|---|
-| `GEM-4-VLA` | ロボット方策の本体。action-generation adapter が Gemma 4 各層の hidden state に cross-attention し、Gemma 4 本体は凍結。projector と action head を学習します。 |
-| `MimicAnno` subtask labeler | Unsloth + QLoRA で finetune した Gemma 4 をオフラインの image-text-to-text VLM として使い、segment ごとの subtask label を生成します。 |
-
-Jetson 上での on-device offline 推論に対応しており、クラウドに依存しない実行を前提にできます。
-
-## なぜ Gemma 4 + VLA-Adapter か
-
-1. **効率的な適応**: LLM 本体は凍結し、言葉・画像・ロボット動作をつなぐ小さなモジュールだけを学習します。
-2. **アーキテクチャの相性**: Gemma 4 の層ごとの構造と、VLA-Adapter が視覚情報や動作情報をモデルへ差し込む仕組みが噛み合います。
-3. **オープンウェイト**: LoRA、量子化、アーキテクチャ実験をハッカソン期間内で試せます。
-4. **多言語と世界知識**: 日英の指示、物体名、物理的な常識が generalization の足場になります。
-5. **on-device で動く**: E2B サイズの Gemma 4 と軽量な adapter 構成により、Jetson 上でクラウドに依存しない offline inference を実行できます。
+<img width="1017" height="712" alt="image" src="https://github.com/user-attachments/assets/6ef4c7d2-b4ad-46ab-9ab7-1a137df98cf5" />
 
 ## リポジトリ構成
 
